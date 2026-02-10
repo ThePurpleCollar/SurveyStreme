@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Credentials & secrets
+credentials.txt
+*.env
+.env.*
+.streamlit/secrets.toml
+
+# Reference documents (client confidential)
+reference/
+
+# Temp/debug scripts
+_analyze*.py
+_test*.py
+connection_test.py
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+nul
+
+# Output
+output/
+
+# Jupyter
+.ipynb_checkpoints/
+Untitled-*.ipynb
+
+# Streamlit
+streamlit_run.txt
