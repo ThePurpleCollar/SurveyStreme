@@ -67,35 +67,63 @@ _TYPE_KEYWORDS_EXACT = {
 _TYPE_KEYWORDS_PARTIAL = ['scale', 'pt', '척도', 'top', 'rank', '순위']
 
 
-# 문항번호가 아닌 것으로 알려진 접두어 (프로세스/메타데이터)
+# 알려진 유효 문항번호 접두어 (화이트리스트 — 휴리스틱 검사 건너뜀)
+_VALID_QN_PREFIXES = {
+    'Q', 'SQ', 'SC', 'S',           # Standard question prefixes
+    'A', 'B', 'C', 'D', 'F',        # Section-based (A1, B2, ...)
+    'P', 'T',                         # Product, Tracking
+    'QA', 'QB', 'QC', 'QD',         # Question groups
+    'BV', 'BVT',                      # Brand value tracking
+    'DM', 'DEM',                      # Demographics
+    'PR',                              # Product
+}
+
+# 비문항 접두어 (블랙리스트 — 항상 거부, 대문자 기준)
 _NON_QUESTION_PREFIXES = {
-    'STEP', 'Step', 'PAGE', 'Page', 'ITEM', 'Item',
-    'NOTE', 'Note', 'PART', 'Part',
+    # Process / routing
+    'STEP', 'PAGE', 'GOTO', 'SKIP', 'LOOP',
+    # Structural markers
+    'PART', 'SECTION', 'BLOCK', 'MODULE',
+    # Metadata / informational
+    'NOTE', 'ITEM', 'INFO', 'TEXT', 'MSG',
+    # Survey flow
+    'INTRO', 'END', 'CLOSE', 'THANK',
+    # Display / programming logic
+    'DISPLAY', 'SHOW', 'HIDE',
+    # Sampling / quota
+    'QUOTA', 'SAMPLE', 'CELL',
 }
 
 
 def _is_valid_question_number(qn: str) -> bool:
-    """문항번호가 실제 설문 문항인지 휴리스틱 검증.
+    """문항번호가 실제 설문 문항인지 검증 (화이트/블랙리스트 + 휴리스틱).
 
-    False positive 방지:
-    - RegionCode2, SegCode15 → camelCase / 긴 접두어 → 변수명
-    - STEP1, PAGE2 → 프로세스/메타데이터 접두어
+    검증 순서:
+    1. 화이트리스트: 알려진 유효 접두어 → 항상 허용
+    2. 블랙리스트: 알려진 비문항 접두어 → 항상 거부
+    3. 휴리스틱: 긴 접두어(>5자) 또는 camelCase → 거부
+    4. 기타: 허용 (짧은 알 수 없는 접두어는 통과)
     """
     prefix_match = re.match(r'^[A-Za-z]+', qn)
     if not prefix_match:
         return False
     alpha = prefix_match.group()
+    upper_alpha = alpha.upper()
 
-    # 1) 접두어 5자 초과 → 변수명일 가능성 (RegionCode, SegCode 등)
+    # 1) 화이트리스트: 알려진 유효 접두어
+    if upper_alpha in _VALID_QN_PREFIXES:
+        return True
+
+    # 2) 블랙리스트: 알려진 비문항 접두어 (대소문자 무시)
+    if upper_alpha in _NON_QUESTION_PREFIXES:
+        return False
+
+    # 3) 접두어 5자 초과 → 변수명일 가능성 (RegionCode, SegCode 등)
     if len(alpha) > 5:
         return False
 
-    # 2) camelCase 감지 (소문자→대문자: RegionCode, SegCode)
+    # 4) camelCase 감지 (소문자→대문자: RegionCode, SegCode)
     if re.search(r'[a-z][A-Z]', alpha):
-        return False
-
-    # 3) 비문항 접두어 차단 (STEP, PAGE, ITEM 등)
-    if alpha in _NON_QUESTION_PREFIXES:
         return False
 
     return True
@@ -248,10 +276,108 @@ FORMAT E - No number (section-based):
   Section headings serve as groupings. Questions may appear as plain text with answer tables below them.
   If a question has no explicit number, use the section name or nearby context to assign an identifier.
 
+FORMAT F - Matrix/Grid:
+  Multiple items rated on a common scale or answer set. Appears in several layouts:
+
+  Variant 1 — Table with scale columns:
+    Q5. Rate each brand on these attributes. [5pt x 3]
+    |                 | 1-Very Poor | 2 | 3-Average | 4 | 5-Very Good |
+    | Brand awareness | O           | O | O         | O | O           |
+    | Product quality | O           | O | O         | O | O           |
+    | Value for money | O           | O | O         | O | O           |
+    → type: "5pt x 3" (5-point scale applied to 3 items)
+
+  Variant 2 — Stem + lettered sub-items sharing a scale:
+    Q6. How much do you agree with each statement? (7pt x 4)
+    1=Strongly disagree ... 7=Strongly agree
+    a) I trust this brand
+    b) I would recommend it
+    c) I am satisfied
+    d) It offers good value
+    → type: "7pt x 4" (7-point scale, 4 items)
+
+  Variant 3 — Non-scale matrix (shared categorical options):
+    Q7. For each brand, indicate your relationship. [MATRIX]
+    |         | Purchased | Considered | Aware | Never heard of |
+    | Brand A | □         | □          | □     | □              |
+    | Brand B | □         | □          | □     | □              |
+    → type: "MATRIX" (columns are categories, not numbered scale points)
+
+  How to classify:
+  - Rows = items, columns = numbered scale points (1–N) → "Npt x M"
+  - Rows = items, columns = non-numeric categories → "MATRIX"
+  - N = scale range (count endpoints), M = number of item rows
+
+TABLE RECOGNITION — how to distinguish table types:
+  - 2-column table (code + label) → answer option list for the preceding question
+  - Multi-column table with numbered headers (1, 2, 3...) and item rows → grid/matrix scale
+  - Multi-column table with category headers and item rows → non-scale matrix
+
+SKIP LOGIC — EXTRACTION RULES:
+Extract routing/branching instructions as {condition, target} pairs.
+
+  Source 1 — Explicit goto/skip after answer options:
+    Q1. Do you own a car? [SA]
+    | 1 | Yes |
+    | 2 | No → Go to Q5 |
+    → skip_logic: [{"condition":"Q1=2","target":"Q5"}]
+
+  Source 2 — [PN: ...] programmer notes with routing:
+    [PN: IF Q1=1 GO TO Q2, ELSE GO TO Q5]
+    → skip_logic: [{"condition":"Q1=1","target":"Q2"}, {"condition":"Q1!=1","target":"Q5"}]
+
+  Source 3 — Arrow notation or inline skip:
+    Q3. Which brand? [SA]
+    1. Brand A
+    2. Brand B
+    3. None of the above ──→ Skip to Q10
+    → skip_logic: [{"condition":"Q3=3","target":"Q10"}]
+
+  Source 4 — Conditional blocks:
+    "IF Q2=1,2: ASK Q3-Q7. IF Q2=3: SKIP TO Q8"
+    → On Q2: skip_logic: [{"condition":"Q2=3","target":"Q8"}]
+
+  Condition format rules:
+  - Use "QN=code" for single code: "Q1=1"
+  - Use "QN=code1,code2" for multiple codes (OR): "Q1=1,2"
+  - Use "QN!=code" for exclusion: "Q3!=99"
+  - Use "&" for AND conditions: "Q1=1&Q3!=99"
+  - Preserve the original question number format (e.g., "SQ1a", "SC2", "BVT11")
+
+FILTER CONDITION — EXTRACTION RULES:
+Extract WHO should answer each question. Filter appears BEFORE or AT the question.
+
+  Source 1 — [PN: ASK IF ...] programmer notes:
+    [PN: ASK IF Q1=1 OR Q1=2]
+    Q2. What type of car do you own?
+    → filter: "Q1=1,2"
+
+  Source 2 — "ASK IF" / "ONLY IF" / "ASK ALL" text:
+    ASK IF Q3=1 AND Q5!=99
+    Q6. How often do you use this product?
+    → filter: "Q3=1&Q5!=99"
+
+  Source 3 — "모두에게" / "전원 응답" (Korean: ask all):
+    모두에게 질문
+    Q1. What is your gender?
+    → filter: "All respondents"
+
+  Source 4 — Inline filter in question header:
+    [SC2. SENSITIVE INDUSTRY (MA)] [PN: ASK ALL]
+    → filter: "All respondents"
+
+  Source 5 — Implicit from previous skip logic:
+    If Q1 skip_logic says "Q1=2 → Q5", then Q2, Q3, Q4 implicitly have filter "Q1=1".
+    But ONLY extract EXPLICIT filter text. Do NOT infer implicit filters.
+
+  Filter format rules:
+  - Use same condition format as skip_logic: "QN=code", "QN=code1,code2", "&" for AND
+  - "ASK ALL" / "모두에게" → "All respondents"
+  - Preserve the exact question numbers referenced in the filter text
+  - If no explicit filter text is found, set filter to null (do NOT guess)
+
 IMPORTANT RULES:
-- Tables (markdown | format) that have 2 columns with code/number + label are answer option lists
-- Tables with header rows + multiple data rows may be matrix/grid questions
-- "[PN: ...]" lines are programmer notes containing filter/routing information
+- "[PN: ...]" lines are programmer notes containing filter/routing information — extract into skip_logic AND/OR filter
 - "ASK IF", "ASK ALL", "ONLY IF" indicate filter conditions
 - "ROTATE", "RANDOMIZE", "SHOW CARD" are interviewer instructions
 - Even if pattern matching found 0 questions, extract ALL questions from the raw text
@@ -315,15 +441,63 @@ CRITICAL:
 - For rankings, ALWAYS include the rank count. Never output just "RANK".
 - If unsure about N, count the answer option codes (e.g., 5 options labeled 1-5 → 5pt).
 
+ANSWER OPTIONS — EXTRACTION RULES:
+Extract answer_options as {code, label} pairs from these sources (in priority order):
+
+  Source 1 — 2-column table (code + label) directly after a question:
+    Q1. What is your gender? [SA]
+    | 1 | Male |
+    | 2 | Female |
+    | 99 | Prefer not to say |
+    → answer_options: [{"code":"1","label":"Male"}, {"code":"2","label":"Female"}, {"code":"99","label":"Prefer not to say"}]
+
+  Source 2 — Numbered list items (#. or "N." or "N)" prefix):
+    Q2. Which brands have you heard of? [MA]
+      #. Samsung
+      #. Apple
+      #. LG
+      #. Sony
+    → answer_options: [{"code":"1","label":"Samsung"}, {"code":"2","label":"Apple"}, {"code":"3","label":"LG"}, {"code":"4","label":"Sony"}]
+    Use sequential numbering (1, 2, 3...) as codes when list items don't have explicit codes.
+
+  Source 3 — Inline code=label pairs (scale anchors):
+    "1=전혀 아니다, 2=그렇지 않다, 3=보통, 4=그렇다, 5=매우 그렇다"
+    or "1=Strongly disagree ... 5=Strongly agree"
+    → answer_options: [{"code":"1","label":"전혀 아니다"}, ..., {"code":"5","label":"매우 그렇다"}]
+
+  Source 4 — Bulleted list items (- prefix):
+    - Product quality
+    - Price competitiveness
+    - Brand reputation
+    → answer_options: [{"code":"1","label":"Product quality"}, {"code":"2","label":"Price competitiveness"}, {"code":"3","label":"Brand reputation"}]
+    Assign sequential codes when bullet items have no explicit codes.
+
+  Source 5 — "Code. Label" pattern in text:
+    1. Very satisfied
+    2. Somewhat satisfied
+    3. Neither satisfied nor dissatisfied
+    4. Somewhat dissatisfied
+    5. Very dissatisfied
+    → answer_options: [{"code":"1","label":"Very satisfied"}, ..., {"code":"5","label":"Very dissatisfied"}]
+
+  CRITICAL RULES for answer_options:
+  - ALWAYS extract ALL options listed. Missing even one option degrades data quality.
+  - For grid/matrix questions, extract the SCALE COLUMNS as answer_options (not the row items).
+    Example: 5pt grid → answer_options = [{code:"1",label:"Very Poor"}, ..., {code:"5",label:"Very Good"}]
+  - Row items in a grid are part of the question structure, not answer_options.
+  - Do NOT include interviewer instructions (SHOW CARD, ROTATE) as answer options.
+  - Do NOT include "Don't know" / "Refused" / "N/A" codes UNLESS they appear in the official code list.
+  - If a question clearly has response options but you cannot determine exact codes, use sequential numbers.
+  - For SA/MA questions with NO visible options (e.g., "Select from list on screen"), use empty array [].
+
 For each question, provide ALL of these fields:
 1. **question_number**: The question identifier (e.g., "Q1", "SC2", "SQ1a")
 2. **question_text**: The question text WITHOUT the number prefix or type brackets
 3. **question_type**: SA, MA, OE, NUMERIC, SCALE, RANK, GRID, MATRIX, or original notation (e.g., "5pt x 7", "Top3")
-4. **answer_options**: Array of {code, label} for ALL listed answer options
+4. **answer_options**: Array of {code, label} for ALL listed answer options (see ANSWER OPTIONS rules above)
 5. **skip_logic**: Array of {condition, target}. From "IF", "Go to", "Skip to", arrows, [PN: ...]
 6. **filter**: Who answers this question. From "ASK IF", "ONLY IF", "모두에게", "[PN: ...]"
-7. **response_base**: Response instruction (e.g., "Select one", "하나만 선택")
-8. **instructions**: Interviewer notes (e.g., "SHOW CARD", "ROTATE", "보기 로테이션")
+7. **instructions**: Interviewer notes (e.g., "SHOW CARD", "ROTATE", "보기 로테이션")
 
 OUTPUT: Return ONLY valid JSON (no markdown code blocks):
 {
@@ -335,7 +509,6 @@ OUTPUT: Return ONLY valid JSON (no markdown code blocks):
       "answer_options": [{"code": "string", "label": "string"}],
       "skip_logic": [{"condition": "string", "target": "string"}],
       "filter": "string or null",
-      "response_base": "string or null",
       "instructions": "string or null"
     }
   ]
@@ -344,18 +517,82 @@ OUTPUT: Return ONLY valid JSON (no markdown code blocks):
 Use [] for empty arrays, null for empty strings. Do NOT wrap in code blocks."""
 
 
-def _build_prompt(chunk_text: str, chunk_index: int, total_chunks: int) -> str:
-    """LLM 전면 추출 프롬프트 생성 — 정규식 힌트 없이 LLM이 단독 식별"""
-    context = ""
-    if total_chunks > 1:
-        context = f"\n[Section {chunk_index + 1} of {total_chunks}]\n"
+def _build_chunk_context(
+    chunk_index: int,
+    total_chunks: int,
+    all_pre_extracted: List[List[dict]],
+    chunks: List[str],
+) -> str:
+    """청크 간 컨텍스트 생성 — 다른 청크의 정규식 사전 추출 결과 요약.
 
-    return f"""Extract ALL survey questions from this questionnaire document.{context}
+    Args:
+        chunk_index: 현재 청크 인덱스
+        total_chunks: 전체 청크 수
+        all_pre_extracted: 모든 청크의 정규식 사전 추출 결과
+        chunks: 모든 청크 텍스트 (이전 청크 말미 추출용)
+
+    Returns:
+        컨텍스트 문자열 (비어있을 수 있음)
+    """
+    if total_chunks <= 1:
+        return ""
+
+    parts = []
+
+    # 다른 청크의 문항번호 요약
+    other_questions = []
+    for i, pre in enumerate(all_pre_extracted):
+        if i == chunk_index:
+            continue
+        qnums = [q["question_number"] for q in pre]
+        if qnums:
+            label = "previous" if i < chunk_index else "later"
+            other_questions.append(f"  Section {i + 1} ({label}): {', '.join(qnums)}")
+
+    if other_questions:
+        parts.append("KNOWN QUESTIONS IN OTHER SECTIONS:\n" + "\n".join(other_questions))
+
+    # 이전 청크의 마지막 ~500자 (경계 문항 연속성)
+    if chunk_index > 0:
+        prev_text = chunks[chunk_index - 1]
+        tail = prev_text[-500:] if len(prev_text) > 500 else prev_text
+        # 첫 번째 줄바꿈에서 잘라 불완전한 줄 제거
+        newline_idx = tail.find('\n')
+        if newline_idx > 0:
+            tail = tail[newline_idx + 1:]
+        parts.append(f"END OF PREVIOUS SECTION (for continuity):\n{tail}")
+
+    return "\n\n".join(parts)
+
+
+def _build_prompt(
+    chunk_text: str,
+    chunk_index: int,
+    total_chunks: int,
+    chunk_context: str = "",
+) -> str:
+    """LLM 전면 추출 프롬프트 생성 — 정규식 힌트 없이 LLM이 단독 식별"""
+    section_info = ""
+    if total_chunks > 1:
+        section_info = f"\n[Section {chunk_index + 1} of {total_chunks}]\n"
+
+    context_block = ""
+    if chunk_context:
+        context_block = f"""
+---DOCUMENT CONTEXT---
+{chunk_context}
+---END CONTEXT---
+
+Use the context above to understand question numbering patterns and avoid duplicating
+questions from other sections. Focus on extracting questions that belong to THIS section.
+
+"""
+
+    return f"""Extract ALL survey questions from this questionnaire document.{section_info}
 
 Identify questions directly from the text content. Use your understanding of survey structure
 to distinguish actual questions asked to respondents from administrative metadata.
-
----BEGIN QUESTIONNAIRE CONTENT---
+{context_block}---BEGIN QUESTIONNAIRE CONTENT---
 {chunk_text}
 ---END QUESTIONNAIRE CONTENT---
 
@@ -452,7 +689,6 @@ def _validate_question(q: dict) -> Optional[dict]:
         "answer_options": normalized_options,
         "skip_logic": normalized_logic,
         "filter": q.get("filter") or None,
-        "response_base": q.get("response_base") or None,
         "instructions": q.get("instructions") or None,
     }
 
@@ -497,6 +733,8 @@ def _normalize_question_type(raw_type) -> Optional[str]:
         return 'SA'
     if upper == 'M':
         return 'MA'
+    if upper == 'O':
+        return 'OE'
 
     # ── 4. 변형 패턴 → 상세 형식으로 변환 ──
     lower = raw.lower()
@@ -511,31 +749,91 @@ def _normalize_question_type(raw_type) -> Optional[str]:
     if m:
         return f"{m.group(1)}pt"
 
-    # "5점 척도 x 3", "5점척도x3" → "5pt x 3"
-    m = re.match(r'(\d+)\s*점\s*척도?\s*x\s*(\d+)', raw, re.IGNORECASE)
+    # "5점 척도 x 3", "5점척도x3", "5점 x 3" → "5pt x 3"
+    m = re.match(r'(\d+)\s*점\s*(?:척도?)?\s*x\s*(\d+)', raw, re.IGNORECASE)
     if m:
         return f"{m.group(1)}pt x {m.group(2)}"
 
     # "5점 척도", "5점척도", "5점" → "5pt"
-    m = re.match(r'^(\d+)\s*점\s*척도?$', raw)
+    m = re.match(r'^(\d+)\s*점\s*(?:척도?)?$', raw)
     if m:
         return f"{m.group(1)}pt"
 
+    # "5pt scale", "5-pt scale" → "5pt"
+    m = re.match(r'^(\d+)\s*-?\s*pt\s+scale$', raw, re.IGNORECASE)
+    if m:
+        return f"{m.group(1)}pt"
+
+    # "scale 1-5", "1-5 scale", "1 to 5", "1-5", "0~10" → range-based scale
+    m = re.match(r'^(?:scale\s+)?(\d+)\s*(?:[-–~]|to)\s*(\d+)(?:\s+scale)?$', raw, re.IGNORECASE)
+    if m:
+        low, high = int(m.group(1)), int(m.group(2))
+        if high > low:
+            return f"{high - low + 1}pt"
+
+    # "Likert 5", "Likert-5", "Likert-7" → "5pt" / "7pt"
+    m = re.match(r'^likert\s*[-:]?\s*(\d+)$', raw, re.IGNORECASE)
+    if m:
+        return f"{m.group(1)}pt"
+
+    # "NPS", "Net Promoter Score" → "11pt" (0–10 scale)
+    if lower in ('nps', 'net promoter score', 'net promoter'):
+        return '11pt'
+
     # ── 5. 동의어 매핑 ──
+    # SA
     if '단수' in lower or 'single' in lower or 'select one' in lower:
         return 'SA'
+    if ('one' in lower or 'single' in lower) and ('choice' in lower or 'select' in lower or 'answer' in lower):
+        return 'SA'
+    if lower in ('binary', 'yes/no', 'dichotomous', 'boolean'):
+        return 'SA'
+    if lower in ('dropdown', 'drop-down', 'pull-down', 'pulldown'):
+        return 'SA'
+    if '객관식' in lower:
+        return 'SA'
+
+    # MA
     if '복수' in lower or 'multiple' in lower or 'select all' in lower:
         return 'MA'
+    if 'multi' in lower and ('choice' in lower or 'select' in lower or 'response' in lower):
+        return 'MA'
+    if lower in ('choose all', 'check all', 'pick all'):
+        return 'MA'
+
+    # OE
     if '주관' in lower or ('open' in lower and 'open/sa' not in lower):
         return 'OE'
     if lower == 'open/sa':
         return 'OE'
+    if 'free text' in lower or 'freetext' in lower or 'verbatim' in lower:
+        return 'OE'
+    if 'open-end' in lower or 'open end' in lower:
+        return 'OE'
+    if lower in ('text entry', 'text input', 'essay'):
+        return 'OE'
+    if '서술형' in lower or '기술형' in lower:
+        return 'OE'
+
+    # NUMERIC
     if 'numeric' in lower or '숫자' in lower:
         return 'NUMERIC'
+    if 'constant sum' in lower or 'allocation' in lower or '배분' in lower:
+        return 'NUMERIC'
+
+    # SCALE
     if 'rating' in lower or 'likert' in lower or '척도' in lower:
         return 'SCALE'
+    if lower in ('slider', 'sliding scale'):
+        return 'SCALE'
+
+    # RANK
     if '순위' in lower:
         return 'RANK'
+    if 'ranking' in lower or 'rank order' in lower:
+        return 'RANK'
+
+    # GRID / MATRIX
     if 'grid' in lower:
         return 'GRID'
     if 'matrix' in lower:
@@ -598,9 +896,10 @@ def extract_questions_from_chunk(
     total_chunks: int,
     model: str = "gemini-2.5-pro",
     pre_extracted: Optional[List[dict]] = None,
+    chunk_context: str = "",
 ) -> List[dict]:
     """LLM 전면 추출 — 정규식 힌트 없이 LLM이 단독으로 문항 식별"""
-    user_prompt = _build_prompt(chunk_text, chunk_index, total_chunks)
+    user_prompt = _build_prompt(chunk_text, chunk_index, total_chunks, chunk_context)
     llm_kwargs = _get_llm_kwargs(model)
 
     try:
@@ -670,7 +969,7 @@ def merge_chunk_results(chunk_results: List[List[dict]]) -> List[dict]:
                         existing["skip_logic"].append(sl)
                         existing_conditions.add(sl["condition"])
 
-                for field in ("filter", "response_base", "instructions", "question_type"):
+                for field in ("filter", "instructions", "question_type"):
                     if not existing.get(field) and q.get(field):
                         existing[field] = q[field]
             else:
@@ -796,6 +1095,12 @@ def extract_survey_questions(
     total_chunks = len(chunks)
     logger.info(f"Regex hints: {total_pre} questions from {total_chunks} chunks")
 
+    # 1-c단계: 청크 간 컨텍스트 빌드 (정규식 사전 추출 기반, 병렬 유지)
+    chunk_contexts = []
+    for i in range(total_chunks):
+        ctx = _build_chunk_context(i, total_chunks, pre_extracted_per_chunk, chunks)
+        chunk_contexts.append(ctx)
+
     # 2단계: LLM 전면 추출 (병렬)
     if total_chunks == 1:
         _notify("chunk_start", {
@@ -803,7 +1108,8 @@ def extract_survey_questions(
             "regex_hints": len(pre_extracted_per_chunk[0]),
         })
         result = extract_questions_from_chunk(
-            client, chunks[0], 0, 1, model, pre_extracted_per_chunk[0]
+            client, chunks[0], 0, 1, model, pre_extracted_per_chunk[0],
+            chunk_context=chunk_contexts[0],
         )
         _notify("chunk_done", {
             "chunk_index": 0, "total_chunks": 1,
@@ -822,7 +1128,9 @@ def extract_survey_questions(
 
         def _extract(idx):
             return idx, extract_questions_from_chunk(
-                client, chunks[idx], idx, total_chunks, model, pre_extracted_per_chunk[idx]
+                client, chunks[idx], idx, total_chunks, model,
+                pre_extracted_per_chunk[idx],
+                chunk_context=chunk_contexts[idx],
             )
 
         with ThreadPoolExecutor(max_workers=min(total_chunks, 4)) as executor:

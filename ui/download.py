@@ -46,7 +46,7 @@ def prepare_excel_download(survey_doc) -> bytes:
         "Base", "Sort", "QuestionNumber", "TableNumber", "QuestionText",
         "TableTitle", "SubBanner", "QuestionType", "SummaryType",
         "NetRecode", "BannerIDs", "SpecialInstructions",
-        "AnswerOptions", "SkipLogic", "Filter", "ResponseBase",
+        "AnswerOptions", "SkipLogic", "Filter",
         "Instructions", "GrammarChecker",
     ]
     ws_main.append(headers)
@@ -73,7 +73,6 @@ def prepare_excel_download(survey_doc) -> bytes:
             q.answer_options_display(),
             q.skip_logic_display(),
             q.filter_condition or "",
-            q.response_base or "",
             q.instructions or "",
             q.grammar_checked,
         ])

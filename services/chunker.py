@@ -107,6 +107,81 @@ def _split_section_at_content(section: DocxSection, max_chars: int) -> List[str]
     return chunks
 
 
+def _is_text_question_start(line: str) -> bool:
+    """plain text 줄이 문항 시작점인지 판별 (PDF 청킹용).
+
+    DocxParagraph 없이 순수 텍스트에서 문항 시작을 감지합니다.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+
+    # 문항번호 패턴 A/B: Q1. / Q2 [S] 등
+    m = _QUESTION_START_RE.match(stripped)
+    if m:
+        qn = re.match(
+            r'(?:\*\*)?([A-Za-z]+[a-z]*\d+[a-z]?(?:-\d+)*|[A-Za-z]+\d+[A-Za-z])',
+            stripped,
+        )
+        if qn and _is_valid_question_number(qn.group(1)):
+            return True
+
+    # 대괄호 헤더형 [SC2. ...]
+    m_bracket = _BRACKET_HEADER_RE.match(stripped)
+    if m_bracket and _is_valid_question_number(m_bracket.group(1)):
+        return True
+
+    return False
+
+
+def chunk_text(pages: List[str], max_chars: int = MAX_CHUNK_CHARS) -> List[str]:
+    """PDF 페이지 텍스트를 LLM 컨텍스트에 맞는 청크로 분할.
+
+    페이지별 텍스트를 결합 후, 줄 단위로 문항 시작 패턴을 탐지하여
+    문항 경계에서 분할합니다.
+
+    Args:
+        pages: read_pdf()에서 반환된 페이지별 텍스트 리스트
+        max_chars: 최대 청크 크기 (문자 수)
+
+    Returns:
+        텍스트 청크 리스트
+    """
+    if not pages:
+        return []
+
+    full_text = "\n".join(pages)
+    lines = full_text.split("\n")
+
+    # 전체 텍스트가 max_chars 이하이면 단일 청크 반환
+    if len(full_text) <= max_chars:
+        return [full_text]
+
+    chunks: List[str] = []
+    current_lines: List[str] = []
+    current_size = 0
+
+    for line in lines:
+        line_size = len(line) + 1  # +1 for newline
+
+        # 문항 시작점이고, 현재 누적이 max_chars를 초과할 경우 분할
+        if (_is_text_question_start(line)
+                and current_size + line_size > max_chars
+                and current_lines):
+            chunks.append("\n".join(current_lines))
+            current_lines = []
+            current_size = 0
+
+        current_lines.append(line)
+        current_size += line_size
+
+    # 남은 줄
+    if current_lines:
+        chunks.append("\n".join(current_lines))
+
+    return chunks
+
+
 def chunk_sections(sections: List[DocxSection], max_chars: int = MAX_CHUNK_CHARS) -> List[str]:
     """섹션 리스트를 LLM 컨텍스트에 맞는 청크로 분할.
 

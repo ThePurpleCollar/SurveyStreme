@@ -384,7 +384,7 @@ def _check_rotation(
     items: List[ChecklistItem] = []
 
     for q in questions:
-        text_to_check = (q.instructions or "") + " " + (q.response_base or "")
+        text_to_check = q.instructions or ""
         if not _ROTATION_PATTERNS.search(text_to_check):
             continue
 

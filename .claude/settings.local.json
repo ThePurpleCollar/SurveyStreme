@@ -42,7 +42,14 @@
       "Bash(findstr:*)",
       "Bash(git init:*)",
       "Bash(git remote add:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)",
+      "Bash(PYTHONPATH=. python:*)",
+      "Bash(for f in tests/smoke_test_*.py)",
+      "Bash(do echo \"=== $f ===\")",
+      "Bash(done)"
     ]
   }
 }

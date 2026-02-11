@@ -1,23 +1,15 @@
 import os
-import re
 import time
 
 import streamlit as st
-import pandas as pd
 from services.pdf_parser import read_pdf
-from services.llm_client import question_summary, MODEL_DOC_ANALYZER
-from services.postprocessor import (
-    extract_question_data,
-    duplicate_and_insert_rows,
-    assign_summary_type,
-    add_table_number_column,
-    update_summary_type,
-)
+from services.llm_client import MODEL_DOC_ANALYZER
+from services.postprocessor import apply_postprocessing
 from services.docx_parser import parse_docx
 from services.docx_renderer import render_sections_to_annotated_text
-from services.chunker import chunk_sections
+from services.chunker import chunk_sections, chunk_text
 from services.llm_extractor import extract_survey_questions
-from models.survey import SurveyDocument
+from models.survey import SurveyDocument, SurveyQuestion
 from services.table_guide_service import analyze_survey_intelligence
 from services.survey_context import enrich_document
 from ui.tree_view import render_tree_view
@@ -52,45 +44,207 @@ def page_document_processing(uploaded_file, client):
 
 
 def _process_pdf(uploaded_file, client):
-    """기존 PDF 처리 파이프라인 (정규식 기반)"""
-    with st.status("Starting PDF analysis...", expanded=True) as upload_status:
-        upload_status.write("Parsing document...")
+    """PDF AI 추출 파이프라인 (DOCX와 동일한 LLM 경로)"""
+
+    # ── Study Brief (optional) ──
+    with st.expander("Study Brief (optional — improves enrichment quality)", expanded=False):
+        brief_col1, brief_col2 = st.columns(2)
+        with brief_col1:
+            client_brand = st.text_input(
+                "Client Brand",
+                value=st.session_state.get("study_client_brand", ""),
+                placeholder="e.g. Hyundai, Samsung, LG",
+                help="The brand commissioning the study.",
+                key="pdf_study_client_brand_input",
+            )
+            st.session_state["study_client_brand"] = client_brand
+        with brief_col2:
+            study_objective = st.text_input(
+                "Study Objective",
+                value=st.session_state.get("study_objective", ""),
+                placeholder="e.g. Brand health tracking, Customer satisfaction",
+                help="Research purpose.",
+                key="pdf_study_objective_input",
+            )
+            st.session_state["study_objective"] = study_objective
+
+    # 추출 버튼
+    extract_button = st.button('Extract Questions with AI', key='extract_pdf_button', use_container_width=True)
+
+    # 이전 결과가 있으면 표시
+    if 'survey_document' in st.session_state and not extract_button:
+        _display_docx_results(st.session_state['survey_document'])
+        return
+
+    if not extract_button:
+        st.info("Click 'Extract Questions with AI' to start AI-powered PDF analysis.", icon="🤖")
+        return
+
+    # ── 추출 파이프라인 시작 ──
+    model = MODEL_DOC_ANALYZER
+
+    with st.status("Phase 1/5: Parsing PDF...", expanded=True) as status:
+        # Phase 1: PDF 파싱
+        status.write("Extracting text from PDF pages...")
         texts = read_pdf(uploaded_file)
 
         if not texts:
-            upload_status.update(label="Failed to extract text from PDF.", state="error")
+            status.update(label="Failed to extract text from PDF.", state="error")
             st.warning("Could not extract text from PDF.")
             return
 
-        upload_status.write("Identifying question numbers...")
-        upload_status.write("Extracting questions...")
-        upload_status.write("Detecting question types...")
-        upload_status.update(label="Document parsing complete.", state="complete", expanded=False)
+        total_pages = len(texts)
+        total_chars = sum(len(t) for t in texts)
+        status.write(f"Parsed: {total_pages} pages, {total_chars:,} characters")
 
-    # PDF에서 추출된 텍스트 전체 결합
-    all_texts = " ".join(texts)
+        # 텍스트 청킹
+        chunks = chunk_text(texts)
+        status.write(f"Split into {len(chunks)} chunk(s) for AI processing")
 
-    # 문항 요약
-    if all_texts:
-        summary = question_summary(client, all_texts, MODEL_DOC_ANALYZER)
-        st.text_area("Document Summary", value=summary, height=100, key='doc_summary_text')
+        # Phase 3 준비: LLM 추출
+        progress_bar = status.progress(0.0)
+        stats_line = status.empty()
 
-    # 문항 추출 및 DataFrame 생성
-    question_data = extract_question_data(texts)
-    df = pd.DataFrame(question_data, columns=['QuestionNumber', 'QuestionText', 'QuestionType'])
-    df = df.drop_duplicates(subset=['QuestionNumber'], keep='first').reset_index(drop=True)
-    df['SummaryType'] = ''
+        start_time = time.time()
+        chunks_done = [0]
+        total_questions_found = [0]
 
-    df = duplicate_and_insert_rows(df)
-    df = assign_summary_type(df)
-    df = add_table_number_column(df)
-    df = update_summary_type(df)
+        def on_progress(event, data):
+            elapsed = time.time() - start_time
 
-    edited_df = st.data_editor(
-        df[['QuestionNumber', 'TableNumber', 'QuestionText', 'QuestionType', 'SummaryType']],
-        height=1000, hide_index=False, num_rows="dynamic"
+            if event == "regex_done":
+                status.update(label="Phase 2/5: Scanning for question patterns...")
+                status.write(f"Quick scan found ~{data['total_hints']} potential questions")
+
+            elif event == "rechunk":
+                status.write(
+                    f"Adaptive split: {data['original_chunks']} -> "
+                    f"{data['new_chunks']} chunks ({data['reason']})"
+                )
+
+            elif event == "chunk_start":
+                total = data['total_chunks']
+                status.update(
+                    label=f"Phase 3/5: Extracting questions with AI... "
+                          f"(Chunk {chunks_done[0]}/{total} done)"
+                )
+                frac = max(chunks_done[0] / total, 0.0)
+                progress_bar.progress(frac)
+
+            elif event == "chunk_done":
+                chunks_done[0] += 1
+                extracted = data['questions_extracted']
+                total_questions_found[0] += extracted
+                done = chunks_done[0]
+                total = data['total_chunks']
+                progress_bar.progress(done / total)
+
+                e_m, e_s = divmod(int(elapsed), 60)
+                status.write(
+                    f"Chunk {data['chunk_index'] + 1}/{total}: "
+                    f"{extracted} questions ({e_m}:{e_s:02d})"
+                )
+
+                status.update(
+                    label=f"Phase 3/5: Extracting questions with AI... "
+                          f"(Chunk {done}/{total} done)"
+                )
+
+                remaining = (elapsed / done * (total - done)) if done > 0 else 0
+                remain_m, remain_s = divmod(int(remaining), 60)
+                stats_line.write(
+                    f"**{total_questions_found[0]}** questions found so far "
+                    f"| Elapsed: {e_m}:{e_s:02d} "
+                    f"| Remaining: ~{remain_m}:{remain_s:02d}"
+                )
+
+            elif event == "merge_done":
+                progress_bar.progress(1.0)
+                stats_line.write(
+                    f"**{data['total_questions']}** questions extracted in total"
+                )
+
+        questions = extract_survey_questions(
+            client=client,
+            chunks=chunks,
+            model=model,
+            progress_callback=on_progress,
+        )
+
+        elapsed_total = time.time() - start_time
+        em, es = divmod(int(elapsed_total), 60)
+        status.update(
+            label=f"Phase 4/5: Finalizing — {len(questions)} questions in {em}:{es:02d}",
+            state="running", expanded=True,
+        )
+
+    if not questions:
+        st.warning("No questions could be extracted. Please check if the document contains survey questions.")
+        return
+
+    # SurveyDocument 생성
+    client_brand = st.session_state.get("study_client_brand", "")
+    study_objective = st.session_state.get("study_objective", "")
+    survey_doc = SurveyDocument(
+        filename=uploaded_file.name,
+        questions=questions,
+        client_brand=client_brand,
+        study_objective=study_objective,
     )
-    st.session_state['edited_df'] = edited_df
+
+    # 후처리: SummaryType, TableNumber 계산
+    apply_postprocessing(survey_doc)
+
+    # ── Phase 5: Survey Enrichment ──
+    with st.status("Phase 5/5: Enriching survey intelligence...", expanded=True) as enrich_status:
+        try:
+            intelligence = analyze_survey_intelligence(
+                questions, language="en",
+                client_brand=client_brand,
+                study_objective=study_objective,
+            )
+            enrich_document(survey_doc, intelligence)
+            obj_count = len(intelligence.get("research_objectives", []))
+            seg_count = len(intelligence.get("key_segments", []))
+            enrich_status.write(
+                f"Study: {intelligence.get('study_type', '')} | "
+                f"{obj_count} objectives | {seg_count} key segments"
+            )
+            enrich_status.update(label="Phase 5/5: Enrichment complete!", state="complete")
+        except Exception as e:
+            enrich_status.update(label=f"Phase 5/5: Enrichment skipped ({e})", state="error")
+
+    # 세션 상태 저장
+    st.session_state['survey_document'] = survey_doc
+    st.session_state['edited_df'] = survey_doc.to_dataframe()
+
+    st.success(f"Successfully extracted **{len(questions)}** questions from the PDF!", icon="✅")
+
+    # Intelligence 요약 카드
+    _render_intelligence_summary(survey_doc)
+
+    # 세션 저장 유도 배너
+    with st.container(border=True):
+        save_col1, save_col2 = st.columns([3, 1])
+        with save_col1:
+            st.markdown(
+                "💾 **Save your session** to skip this step next time.  \n"
+                "Upload the saved `.json` file later to instantly restore all results."
+            )
+        with save_col2:
+            st.download_button(
+                label="💾 Save Session",
+                data=survey_doc.to_json_bytes(),
+                file_name=f"{os.path.splitext(uploaded_file.name)[0]}_session.json",
+                mime='application/json',
+                use_container_width=True,
+                type="primary",
+            )
+
+    st.toast("Extraction complete! Save your session for future use.", icon="💾")
+
+    # 결과 표시
+    _display_docx_results(survey_doc)
 
 
 def _process_docx(uploaded_file, client):
@@ -253,7 +407,7 @@ def _process_docx(uploaded_file, client):
     )
 
     # 후처리: SummaryType, TableNumber 계산
-    _apply_postprocessing(survey_doc)
+    apply_postprocessing(survey_doc)
 
     # ── Phase 5: Survey Enrichment ──
     with st.status("Phase 5/5: Enriching survey intelligence...", expanded=True) as enrich_status:
@@ -305,79 +459,6 @@ def _process_docx(uploaded_file, client):
 
     # 결과 표시
     _display_docx_results(survey_doc)
-
-
-def _scale_summary_type(n: int) -> str:
-    """척도 점수(N)에 따른 SummaryType 결정.
-
-    postprocessor.py의 update_summary_type()과 동일한 매핑.
-    """
-    _SCALE_MAP = {
-        4:  '%/Top2(3+4)/Bot2(1+2)/Mean',
-        5:  '%/Top2(4+5)/Mid(3)/Bot2(1+2)/Mean',
-        6:  '%/Top2(5+6)/Mid(3+4)/Bot2(1+2)/Mean',
-        7:  '%/Top2(6+7)/Mid(3+4+5)/Bot2(1+2)/Top3(5+6+7)/Mid(4)/Bot3(1+2+3)/Mean',
-        10: '%/Top2(9+10)/Bot2(1+2)/Top3(8+9+10)/Bot3(1+2+3)/Mean',
-    }
-    return _SCALE_MAP.get(n, '%/Top2/Bot2/Mean')
-
-
-def _apply_postprocessing(survey_doc: SurveyDocument):
-    """추출된 문항에 SummaryType, TableNumber 등 후처리 적용"""
-    # 간단한 TableNumber 할당
-    qn_count = {}
-    for q in survey_doc.questions:
-        qn = q.question_number
-        if qn not in qn_count:
-            qn_count[qn] = 0
-        qn_count[qn] += 1
-
-    qn_current = {}
-    for q in survey_doc.questions:
-        qn = q.question_number
-        if qn_count[qn] > 1:
-            qn_current.setdefault(qn, 0)
-            qn_current[qn] += 1
-            q.table_number = f"{qn}_{qn_current[qn]}"
-        else:
-            q.table_number = qn
-
-    # SummaryType 할당 (패턴 기반 매핑)
-    for q in survey_doc.questions:
-        if not q.question_type:
-            continue
-
-        qtype = q.question_type
-
-        # "Npt x M" (grid scale) → 척도 세분화
-        m = re.match(r'^(\d+)pt\s*x\s*\d+$', qtype, re.IGNORECASE)
-        if m:
-            q.summary_type = _scale_summary_type(int(m.group(1)))
-            continue
-
-        # "Npt" (simple scale) → 척도 세분화
-        m = re.match(r'^(\d+)pt$', qtype, re.IGNORECASE)
-        if m:
-            q.summary_type = _scale_summary_type(int(m.group(1)))
-            continue
-
-        # "TopN" / "RankN" → %
-        if re.match(r'^(Top|Rank)\s*\d+$', qtype, re.IGNORECASE):
-            q.summary_type = '%'
-            continue
-
-        # 표준 유형
-        upper = qtype.upper()
-        _STANDARD_MAP = {
-            'SA': '%', 'MA': '%', 'OE': '%', 'MATRIX': '%',
-            'NUMERIC': '%, mean',
-            'SCALE': '%/Top2/Bot2/Mean',
-            'GRID': '%/Top2/Bot2/Mean',
-            'RANK': '%',
-        }
-        if upper in _STANDARD_MAP:
-            q.summary_type = _STANDARD_MAP[upper]
-            continue
 
 
 def _render_intelligence_summary(doc: SurveyDocument):

@@ -260,8 +260,6 @@ def _format_question_for_prompt(q: SurveyQuestion) -> str:
     parts.append(f"Text: {q.question_text}")
     if q.filter_condition:
         parts.append(f"Filter: {q.filter_condition}")
-    if q.response_base:
-        parts.append(f"Response Base: {q.response_base}")
     if q.instructions:
         parts.append(f"Instructions: {q.instructions}")
     if q.answer_options:

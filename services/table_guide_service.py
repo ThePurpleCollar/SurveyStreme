@@ -127,8 +127,6 @@ def _format_questions_full(questions: List[SurveyQuestion]) -> str:
             lines.append(f"  Filter: {q.filter_condition}")
         if q.skip_logic:
             lines.append(f"  Skip: {q.skip_logic_display()}")
-        if q.response_base:
-            lines.append(f"  Response Base: {q.response_base}")
         lines.append("")
     return "\n".join(lines)
 
@@ -1517,19 +1515,49 @@ def suggest_banner_points(questions: List[SurveyQuestion],
 
 
 # ======================================================================
+# Banner-to-Question Assignment — helpers
+# ======================================================================
+
+_QN_RE = re.compile(r'([A-Za-z]+\d+[a-zA-Z]*)')
+
+
+def _extract_all_banner_qns(banner: Banner) -> set[str]:
+    """배너의 모든 조건에서 참조하는 문항번호를 대문자로 추출."""
+    qns: set[str] = set()
+    for pt in banner.points:
+        if pt.source_question:
+            for sq in pt.source_question.split("&"):
+                sq = sq.strip()
+                if sq:
+                    qns.add(sq.upper())
+        if pt.condition:
+            for m in _QN_RE.findall(pt.condition):
+                qns.add(m.upper())
+    return qns
+
+
+def _extract_filter_qns(filter_condition: str) -> set[str]:
+    """필터 조건에서 참조하는 문항번호를 대문자로 추출."""
+    if not filter_condition:
+        return set()
+    return {m.upper() for m in _QN_RE.findall(filter_condition)}
+
+
+# ======================================================================
 # Banner-to-Question Assignment
 # ======================================================================
 
 def assign_banners_to_questions(questions: List[SurveyQuestion],
                                  banners: List[Banner]) -> dict:
-    """문항 role/유형 기반 배너 자동 할당.
+    """문항 role/유형 기반 배너 자동 할당 (semantic fitness rules).
 
     할당 규칙:
     1. screening → Total only (배너 없음)
     2. demographics → Total only (배너 소스 문항이므로 자기 자신에게 배너 불필요)
-    3. 나머지 본조사 문항 → All banners
-    4. OE 문항 → Total only (주관식은 교차분석 불가)
-    5. 배너의 source_question과 동일한 문항 → 해당 배너 제외 (자기참조 방지)
+    3. OE 문항 → Total only (주관식은 교차분석 불가)
+    4. 배너 조건(source_question + condition)에서 참조하는 문항 → 해당 배너 제외 (자기참조 방지)
+    5. 문항 필터가 배너 소스와 겹치면 → 해당 배너 제외 (filter overlap)
+    6. 나머지 본조사 문항 → All applicable banners
 
     Returns:
         dict: {question_number: "A,B,C" 형태의 배너 ID 문자열}
@@ -1537,16 +1565,10 @@ def assign_banners_to_questions(questions: List[SurveyQuestion],
     if not banners:
         return {q.question_number: "" for q in questions}
 
-    # 배너별 소스 문항 수집
-    banner_source_map: dict[str, set] = {}  # {banner_id: set(source_qns)}
-    for b in banners:
-        src_qns: set[str] = set()
-        for pt in b.points:
-            for sq in pt.source_question.split("&"):
-                sq = sq.strip()
-                if sq:
-                    src_qns.add(sq)
-        banner_source_map[b.banner_id] = src_qns
+    # 배너별 참조 문항 수집 (source_question + condition 모두)
+    banner_ref_map: dict[str, set[str]] = {
+        b.banner_id: _extract_all_banner_qns(b) for b in banners
+    }
 
     all_banner_ids = [b.banner_id for b in banners]
     result = {}
@@ -1573,19 +1595,52 @@ def assign_banners_to_questions(questions: List[SurveyQuestion],
             result[q.question_number] = ""
             continue
 
-        # Rule 4: OE → Total only
+        # Rule 3: OE → Total only
         if "OE" in qtype or "OPEN" in qtype:
             result[q.question_number] = ""
             continue
 
-        # Rule 3+5: All banners except self-referencing
+        # Rule 4+5+6: All banners except self-referencing / filter overlap
+        qn_upper = q.question_number.upper()
+        filter_qns = _extract_filter_qns(q.filter_condition or "")
+
         applicable = []
         for bid in all_banner_ids:
-            if q.question_number not in banner_source_map.get(bid, set()):
-                applicable.append(bid)
+            banner_qns = banner_ref_map.get(bid, set())
+            # Rule 4: self-reference — 문항이 배너 조건에서 참조됨
+            if qn_upper in banner_qns:
+                continue
+            # Rule 5: filter overlap — 문항 필터가 배너 소스와 겹침
+            if filter_qns and filter_qns & banner_qns:
+                continue
+            applicable.append(bid)
         result[q.question_number] = ",".join(applicable)
 
     return result
+
+
+def expand_banner_ids(banner_ids_str: str, banners: List[Banner]) -> str:
+    """'A,B,C' → 'A(Gender), B(Age), C(Ownership)' 변환 (서비스 레이어용).
+
+    Args:
+        banner_ids_str: 쉼표 구분 배너 ID 문자열
+        banners: Banner 객체 리스트
+    """
+    if not banner_ids_str or not banner_ids_str.strip():
+        return ""
+    if not banners:
+        return banner_ids_str
+
+    bid_to_name = {b.banner_id: b.name for b in banners}
+    parts = []
+    for bid in banner_ids_str.split(","):
+        bid = bid.strip()
+        name = bid_to_name.get(bid, "")
+        if name:
+            parts.append(f"{bid}({name})")
+        else:
+            parts.append(bid)
+    return ", ".join(parts)
 
 
 # ======================================================================
@@ -1631,16 +1686,48 @@ _SUBBANNER_SYSTEM_PROMPT = """You are a DP specialist for marketing research cro
 Identify questions that need a SubBanner (secondary analysis dimension), typically for grid/matrix questions.
 
 ## Rules
-1. Grid/matrix questions (e.g., "5pt x 10" or "SCALE") may need sub-banners
-   when they evaluate multiple items that could be analyzed separately.
-2. The sub-banner dimension is typically the list of items being rated.
-3. Only suggest sub-banners for matrix/grid questions. Return empty for others.
-4. Keep the sub-banner description concise.
+1. Grid/matrix questions (e.g., "5PT X 10", "GRID", "MATRIX", "5PT SCALE X 8") need sub-banners
+   when they evaluate multiple items on a common scale.
+2. The sub-banner = the list of row stubs (items being rated), NOT the scale points.
+3. Extract item names from the question text, answer options, or the Instructions field.
+4. **Piping detection**: If the text says "Q3에서 선택한 항목", "pipe from Q3", "items selected at Q3",
+   reference the source question instead of listing items (e.g., "Items selected at Q3").
+5. Single-scale questions with NO item list → return empty string.
+6. List 3-5 representative items followed by "등" or "etc." to keep it concise.
+7. Only suggest sub-banners for matrix/grid questions. Return empty for SA, MA, OE, and others.
+8. Write in the same language as the question text.
+
+## Examples
+
+### Example 1 — Standard matrix (Korean)
+Question: "다음 각 브랜드에 대해 얼마나 만족하십니까?"
+Type: 5PT X 8
+→ sub_banner: "평가 항목 (브랜드 A, 브랜드 B, 브랜드 C 등)"
+
+### Example 2 — Standard matrix (English)
+Question: "How satisfied are you with each of the following aspects?"
+Type: 7PT SCALE X 5
+→ sub_banner: "Rated items (Price, Quality, Service, Variety, etc.)"
+
+### Example 3 — Piping (Korean)
+Question: "Q3에서 선택한 브랜드 각각에 대해 평가해 주세요"
+Type: 5PT X GRID
+→ sub_banner: "Q3에서 선택한 항목"
+
+### Example 4 — Piping (English)
+Question: "Please rate each brand you selected in Q5"
+Type: MATRIX
+→ sub_banner: "Items selected at Q5"
+
+### Example 5 — Single scale, no items
+Question: "Overall, how satisfied are you?"
+Type: 5PT SCALE
+→ sub_banner: ""
 
 ## JSON Output Format
 {
   "results": [
-    {"question_number": "Q5", "sub_banner": "Q5 rated items (Taste, Price, Quality, etc.)"},
+    {"question_number": "Q5", "sub_banner": "Rated items (Taste, Price, Quality, etc.)"},
     {"question_number": "Q6", "sub_banner": ""}
   ]
 }"""
@@ -1664,7 +1751,9 @@ def suggest_sub_banners(questions: List[SurveyQuestion],
         seen_qn.add(q.question_number)
 
         qtype = (q.question_type or "").strip().upper()
-        if re.match(r'\d+\s*PT\s*X\s*\d+', qtype) or "GRID" in qtype or "MATRIX" in qtype:
+        if (re.match(r'\d+\s*PT\s*X\s*\d+', qtype)
+                or re.match(r'\d+\s*PT\s+SCALE\s*X\s*\d+', qtype)
+                or "GRID" in qtype or "MATRIX" in qtype):
             matrix_qs.append(q)
         else:
             result[q.question_number] = ""
@@ -1681,6 +1770,13 @@ def suggest_sub_banners(questions: List[SurveyQuestion],
         lines.append(f"[{q.question_number}] {q.question_text}")
         lines.append(f"  Type: {q.question_type or ''}")
         lines.append(f"  Options: {q.answer_options_compact()}")
+        if q.instructions:
+            lines.append(f"  Instructions: {q.instructions}")
+        if q.filter_condition:
+            lines.append(f"  Filter: {q.filter_condition}")
+        if q.skip_logic:
+            skip_text = q.skip_logic_display()[:200]
+            lines.append(f"  Skip: {skip_text}")
         lines.append("")
 
     user_prompt = "\n".join(lines)
@@ -1709,21 +1805,53 @@ def suggest_sub_banners(questions: List[SurveyQuestion],
 _SPECIAL_INSTR_SYSTEM_PROMPT = """You are a DP specialist for marketing research.
 Generate Special Instructions (programming notes) for survey cross-tabulation tables.
 
+## Pattern Categories (detect and generate instructions for these)
+1. **Rotation/Randomization**: "보기 로테이션", "randomize", "rotate", "shuffle"
+   → "Randomize option order" / "보기 순서 로테이션"
+2. **Piping**: "pipe from Q3", "Q3에서 가져오기", "items selected at Q3"
+   → "Pipe from Q3" / "Q3에서 파이핑"
+3. **Open-end Coding**: OE/open-ended questions
+   → "Open-end coding required" / "주관식 코딩 필요"
+4. **Exclusive Answer**: "단독응답", "exclusive", "none of the above", "해당 없음"
+   → "Exclusive code handling required" / "단독응답 코드 처리 필요"
+5. **Scale Anchoring**: Labeled endpoints on scales (e.g., "1=전혀 아님, 5=매우 그러함")
+   → "Scale anchoring: 1=Not at all, 5=Very much" / "척도 양 끝단: 1=전혀 아님, 5=매우 그러함"
+6. **Rank Limit**: "rank top 3", "상위 3개 선택", "최대 N개"
+   → "Rank limit: top 3" / "순위 제한: 상위 3개"
+7. **Quota Reference**: quota, weighting, 쿼터, 가중치
+   → "Quota/weight reference" / "쿼터/가중치 참조"
+8. **NET Grouping**: Top2Box, Bottom2Box, NET calculation
+   → "Top2/Bottom2 NET" / "Top2/Bottom2 NET 계산"
+9. **Multiple Response**: MA questions, multiple punch
+   → "Multiple response" / "복수응답 처리"
+10. **Filter/Skip Instruction**: conditional display, skip patterns
+    → Include the filter/skip condition in the instruction
+11. **Show Card**: "SHOW CARD", "보기 카드", "show list", "카드 제시"
+    → "Show Card" / "보기 카드 제시"
+
 ## Rules
-1. Detect patterns that need special handling:
-   - Rotation/Randomization: "보기 로테이션", "randomize", "rotate"
-   - Piping: "pipe from Q3", "Q3에서 가져오기"
-   - Open-ended coding: OE questions need coding instructions
-   - Weighting: weight variables or quota
-   - Multiple response: mention if punching is needed
-2. If no special instruction is needed, return empty string.
-3. Keep instructions concise and actionable.
-4. Write in the same language as the question text.
+- If no special instruction is needed, return empty string.
+- Combine multiple applicable patterns with " / " separator.
+- Keep instructions concise and actionable.
+- Write in the same language as the question text.
+- When Filter or Skip fields are present, incorporate them into the instruction.
+
+## Examples
+
+### Korean
+- Q1 (로테이션+단독응답): "보기 순서 로테이션 / 단독응답 코드 처리 필요"
+- Q5 (파이핑+순위): "Q3에서 파이핑 / 순위 제한: 상위 3개"
+- Q8 (주관식): "주관식 코딩 필요"
+
+### English
+- Q1 (rotation+exclusive): "Randomize option order / Exclusive code handling required"
+- Q5 (piping+rank): "Pipe from Q3 / Rank limit: top 3"
+- Q8 (OE): "Open-end coding required"
 
 ## JSON Output Format
 {
   "results": [
-    {"question_number": "Q1", "instruction": "Randomize option order"},
+    {"question_number": "Q1", "instruction": "Randomize option order / Exclusive code handling required"},
     {"question_number": "Q5", "instruction": "Pipe selected brands from Q3"},
     {"question_number": "Q10", "instruction": ""}
   ]
@@ -1750,6 +1878,17 @@ def generate_special_instructions(questions: List[SurveyQuestion],
     piping_patterns = re.compile(
         r'(pipe|파이핑|가져오기|from\s+[A-Z]+\d+|에서\s+선택)', re.IGNORECASE
     )
+    exclusive_patterns = re.compile(
+        r'(exclusive|단독\s*응답|배타적|single[\-\s]*punch|해당\s*없음|none\s+of\s+the\s+above)',
+        re.IGNORECASE,
+    )
+    rank_patterns = re.compile(
+        r'(rank\s+top\s*\d+|상위\s*\d+\s*개|순위|최대\s*\d+\s*개|select\s+up\s+to\s*\d+)',
+        re.IGNORECASE,
+    )
+    show_card_patterns = re.compile(
+        r'(SHOW\s+CARD|보기\s*카드|show\s+list|카드\s*제시)', re.IGNORECASE
+    )
 
     for q in questions:
         if q.question_number in seen_qn:
@@ -1757,13 +1896,17 @@ def generate_special_instructions(questions: List[SurveyQuestion],
         seen_qn.add(q.question_number)
 
         instructions_text = (q.instructions or "") + " " + (q.question_text or "")
+        options_text = " ".join(
+            opt.label for opt in (q.answer_options or []) if opt.label
+        )
+        search_text = instructions_text + " " + options_text
         auto_parts = []
 
-        if rotation_patterns.search(instructions_text):
+        if rotation_patterns.search(search_text):
             auto_parts.append("Randomize option order" if language == "en"
                               else "보기 순서 로테이션")
 
-        if piping_patterns.search(instructions_text):
+        if piping_patterns.search(search_text):
             auto_parts.append("Pipe from previous question" if language == "en"
                               else "이전 문항에서 파이핑")
 
@@ -1771,6 +1914,22 @@ def generate_special_instructions(questions: List[SurveyQuestion],
         if "OE" in qtype or "OPEN" in qtype:
             auto_parts.append("Open-end coding required" if language == "en"
                               else "주관식 코딩 필요")
+
+        if exclusive_patterns.search(search_text):
+            auto_parts.append("Exclusive code handling required" if language == "en"
+                              else "단독응답 코드 처리 필요")
+
+        if rank_patterns.search(search_text):
+            auto_parts.append("Rank limit applies" if language == "en"
+                              else "순위 제한 적용")
+
+        if show_card_patterns.search(search_text):
+            auto_parts.append("Show Card" if language == "en"
+                              else "보기 카드 제시")
+
+        if not auto_parts and ("MA" in qtype or "MULTI" in qtype):
+            auto_parts.append("Multiple response" if language == "en"
+                              else "복수응답 처리")
 
         if auto_parts:
             result[q.question_number] = " / ".join(auto_parts)
@@ -1803,6 +1962,11 @@ def generate_special_instructions(questions: List[SurveyQuestion],
                 lines.append(f"  Instructions: {q.instructions}")
             if q.answer_options:
                 lines.append(f"  Options: {q.answer_options_compact()}")
+            if q.filter_condition:
+                lines.append(f"  Filter: {q.filter_condition}")
+            if q.skip_logic:
+                skip_text = q.skip_logic_display()[:200]
+                lines.append(f"  Skip: {skip_text}")
             lines.append("")
 
         user_prompt = "\n".join(lines)
@@ -1944,8 +2108,8 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
     tg_headers = [
         "Base", "Sort", "QuestionNumber", "TableNumber", "QuestionText",
         "TableTitle", "SubBanner", "QuestionType", "SummaryType",
-        "NetRecode", "BannerIDs", "SpecialInstructions", "Filter",
-        "GrammarChecker",
+        "NetRecode", "BannerIDs", "BannerNames", "SpecialInstructions",
+        "Filter", "GrammarChecker",
     ]
     ws_tg.append(tg_headers)
     _style_header(ws_tg)
@@ -1958,6 +2122,7 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
     for row in tg_doc.rows:
         key = row["QuestionNumber"] + "_" + row["TableNumber"]
         gc = qn_grammar.get(key, "")
+        banner_ids_val = row.get("BannerIDs", "")
         ws_tg.append([
             row.get("Base", ""),
             row.get("Sort", ""),
@@ -1969,7 +2134,8 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
             row.get("QuestionType", ""),
             row.get("SummaryType", ""),
             row.get("NetRecode", ""),
-            row.get("BannerIDs", ""),
+            banner_ids_val,
+            expand_banner_ids(banner_ids_val, tg_doc.banners),
             row.get("SpecialInstructions", ""),
             row.get("Filter", ""),
             gc,
@@ -1979,7 +2145,7 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
         for cell in row:
             cell.alignment = wrap_align
 
-    tg_col_widths = [20, 12, 15, 12, 50, 35, 20, 12, 25, 30, 12, 35, 30, 35]
+    tg_col_widths = [20, 12, 15, 12, 50, 35, 20, 12, 25, 30, 12, 40, 35, 30, 35]
     for i, w in enumerate(tg_col_widths, 1):
         ws_tg.column_dimensions[get_column_letter(i)].width = w
 

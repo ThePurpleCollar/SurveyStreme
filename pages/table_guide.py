@@ -19,7 +19,7 @@ from services.survey_context import build_survey_context
 from services.table_guide_service import (
     analyze_survey_intelligence,
     assign_banners_to_questions,
-    compile_table_guide, export_table_guide_excel,
+    compile_table_guide, expand_banner_ids, export_table_guide_excel,
     generate_bases, generate_net_recodes,
     generate_sort_orders, generate_special_instructions,
     suggest_banner_points, suggest_sub_banners,
@@ -728,23 +728,12 @@ def _expand_banner_ids(banner_ids_str: str) -> str:
     """'A,B,C' → 'A(Gender), B(Age), C(Ownership)' 변환.
 
     doc.banners에서 배너 이름을 조회하여 사람이 읽을 수 있는 형태로 변환.
+    서비스 레이어의 expand_banner_ids()에 위임.
     """
-    if not banner_ids_str or not banner_ids_str.strip():
-        return ""
     doc = st.session_state.get("survey_document")
     if not doc or not doc.banners:
-        return banner_ids_str
-
-    bid_to_name = {b.banner_id: b.name for b in doc.banners}
-    parts = []
-    for bid in banner_ids_str.split(","):
-        bid = bid.strip()
-        name = bid_to_name.get(bid, "")
-        if name:
-            parts.append(f"{bid}({name})")
-        else:
-            parts.append(bid)
-    return ", ".join(parts)
+        return banner_ids_str or ""
+    return expand_banner_ids(banner_ids_str, doc.banners)
 
 
 def _banner_id_name_map() -> dict:

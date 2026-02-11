@@ -116,7 +116,6 @@ class SurveyQuestion:
     answer_options: List[AnswerOption] = field(default_factory=list)
     skip_logic: List[SkipLogic] = field(default_factory=list)
     filter_condition: Optional[str] = None     # "Q2=3,4 응답자만"
-    response_base: Optional[str] = None        # "하나만 선택", "모두 선택"
     instructions: Optional[str] = None         # "SHOW CARD", "보기 로테이션"
     # 기존 호환 필드
     summary_type: str = ""
@@ -167,7 +166,6 @@ class SurveyQuestion:
             "AnswerOptions": self.answer_options_compact(),
             "SkipLogic": self.skip_logic_display(),
             "Filter": self.filter_condition or "",
-            "ResponseBase": self.response_base or "",
             "Instructions": self.instructions or "",
             "SummaryType": self.summary_type,
             "TableTitle": self.table_title,
@@ -195,7 +193,6 @@ class SurveyQuestion:
                 {"condition": s.condition, "target": s.target} for s in self.skip_logic
             ],
             "filter_condition": self.filter_condition,
-            "response_base": self.response_base,
             "instructions": self.instructions,
             "summary_type": self.summary_type,
             "table_number": self.table_number,
@@ -231,7 +228,6 @@ class SurveyQuestion:
                 if isinstance(s, dict) and "condition" in s
             ],
             filter_condition=d.get("filter_condition"),
-            response_base=d.get("response_base"),
             instructions=d.get("instructions"),
             summary_type=d.get("summary_type", ""),
             table_number=d.get("table_number", ""),
@@ -267,7 +263,6 @@ class SurveyQuestion:
                 if isinstance(s, dict) and "condition" in s
             ],
             filter_condition=d.get("filter"),
-            response_base=d.get("response_base"),
             instructions=d.get("instructions"),
         )
 

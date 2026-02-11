@@ -29,15 +29,12 @@ def render_tree_view(survey_doc: SurveyDocument):
             st.markdown(f"**Question:** {q.question_text}")
 
             # 메타 정보를 컬럼으로 표시
-            meta_cols = st.columns(3)
+            meta_cols = st.columns(2)
 
             with meta_cols[0]:
                 if q.question_type:
                     st.markdown(f"**Type:** `{q.question_type}`")
             with meta_cols[1]:
-                if q.response_base:
-                    st.markdown(f"**Base:** {q.response_base}")
-            with meta_cols[2]:
                 if q.instructions:
                     st.markdown(f"**Instructions:** _{q.instructions}_")
 
