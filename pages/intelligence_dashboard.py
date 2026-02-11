@@ -26,6 +26,11 @@ _TYPE_SECONDS: Dict[str, int] = {
     "Scale": 15,
 }
 
+_DEFAULT_SECONDS = 12          # 유형 미상 문항 기본 응답 시간
+_GRID_DEFAULT_ROWS = 5         # Grid/Matrix 기본 행 수
+_GRID_SECONDS_PER_CELL = 8     # Grid 셀당 응답 시간
+_TOPN_SECONDS = 25             # TopN 유형 응답 시간
+
 _GRID_ROW_RE = re.compile(r'(\d+)\s*(?:pt|point|항목|row)', re.IGNORECASE)
 _GRID_COL_RE = re.compile(r'x\s*(\d+)', re.IGNORECASE)
 
@@ -40,18 +45,18 @@ def _estimate_loi_quick(questions: List[SurveyQuestion]) -> int:
     for q in questions:
         qtype = (q.question_type or "").strip().upper()
         if not qtype:
-            total_seconds += 12  # 기본값
+            total_seconds += _DEFAULT_SECONDS
             continue
 
         # Grid/Matrix: "Npt x M" 형태 처리
         if "X" in qtype or "GRID" in qtype or "MATRIX" in qtype or "NPT" in qtype:
-            rows = 5  # 기본 행 수
+            rows = _GRID_DEFAULT_ROWS
             row_match = _GRID_ROW_RE.search(q.question_type or "")
             if row_match:
                 rows = int(row_match.group(1))
             col_match = _GRID_COL_RE.search(q.question_type or "")
             cols = int(col_match.group(1)) if col_match else 1
-            total_seconds += rows * 8 * cols
+            total_seconds += rows * _GRID_SECONDS_PER_CELL * cols
             continue
 
         # Scale 계열
@@ -61,7 +66,7 @@ def _estimate_loi_quick(questions: List[SurveyQuestion]) -> int:
 
         # TopN
         if "TOPN" in qtype or "TOP" in qtype:
-            total_seconds += 25
+            total_seconds += _TOPN_SECONDS
             continue
 
         # 일반 유형 매칭
@@ -72,7 +77,7 @@ def _estimate_loi_quick(questions: List[SurveyQuestion]) -> int:
                 matched = True
                 break
         if not matched:
-            total_seconds += 12
+            total_seconds += _DEFAULT_SECONDS
 
     return max(1, round(total_seconds / 60))
 

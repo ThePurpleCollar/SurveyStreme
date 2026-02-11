@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from services.path_simulator import (
+    parse_condition,
     simulate_paths,
     trace_path,
     SimulationResult,
@@ -41,6 +42,7 @@ def page_path_simulator():
 
     # Analyze button
     if st.button("Analyze Paths", type="primary"):
+        st.session_state.pop("traced_path", None)
         with st.spinner("Analyzing paths..."):
             result = simulate_paths(questions)
             st.session_state["path_simulator_result"] = result
@@ -196,7 +198,6 @@ def _render_interactive_tracer(questions):
             # 스킵 조건에서 코드 추출
             codes = set()
             for sl in q.skip_logic:
-                from services.path_simulator import parse_condition
                 cond = parse_condition(sl.condition)
                 if cond.is_parsed:
                     codes.update(cond.answer_codes)

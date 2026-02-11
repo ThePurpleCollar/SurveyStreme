@@ -110,7 +110,7 @@ def page_checklist_generator():
     lang = result.language
 
     if not result.items:
-        st.success("No checklist items generated. The survey appears clean!")
+        st.success("Checklist analysis complete — no issues detected in the survey.")
         return
 
     st.divider()

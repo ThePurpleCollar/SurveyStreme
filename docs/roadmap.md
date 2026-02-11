@@ -44,3 +44,16 @@
 
 - [ ] **TASK-20**: LLM 호출 자동 재시도 (exponential backoff) — TASK-10 통합
 - [ ] **TASK-21**: Phase 5 enrichment 실패 시 사용자 알림
+
+## Phase 8 — 신규 기능 ✅
+
+- [x] **Expert Consensus Banner**: 전문가 합의 기반 배너 생성 파이프라인
+- [x] **Intelligence Dashboard**: 설문지 전체 요약 대시보드 (LOI 추정, 유형 분포, 스킵 복잡도)
+- [x] **Piping Intelligence**: 파이핑 로직 분석 및 시각화
+- [x] **Path Simulator**: DFS 경로 열거, 테스트 시나리오 생성, 인터랙티브 경로 추적기
+- [x] **Checklist Generator**: 알고리즘 + LLM 기반 링크테스트 체크리스트 생성
+- [x] **Translation Helper**: 다국어 번역 지원 도구
+
+## Phase 9 — 감사 & 품질
+
+- [x] **Audit Fix**: inline import 이동, stale state 초기화, 빈 결과 메시지 개선, magic number 상수화
