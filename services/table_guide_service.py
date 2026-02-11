@@ -6,10 +6,12 @@ Phase 4: Special Instructions + Full Compile + Export
 """
 
 import io
+import json as _json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import List
+from typing import Callable, List
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -31,7 +33,7 @@ def _extract_json_from_text(text: str) -> dict:
     마크다운 코드 펜스, 설명 텍스트, 후행 텍스트 등을 제거하고
     첫 번째 `{` ~ 마지막 `}`를 JSON으로 파싱.
     """
-    import json as _json
+
 
     cleaned = text.strip()
 
@@ -101,6 +103,8 @@ MODEL_SUBBANNER_SUGGESTER = DEFAULT_MODEL          # GPT-4.1-mini
 MODEL_SPECIAL_INSTRUCTIONS = DEFAULT_MODEL         # GPT-4.1-mini
 
 BATCH_SIZE = 20
+
+_PRIORITY_MAP = {"critical": "high", "important": "high", "supplementary": "medium"}
 
 
 # ── 공통 유틸 ──────────────────────────────────────────────────────
@@ -739,7 +743,6 @@ def _create_analysis_plan(questions: List[SurveyQuestion],
                         f"client={cot.get('client_brand', '')}, "
                         f"perspectives={len(result.get('categories', []))}")
         # Flatten banner_dimensions from categories for downstream compatibility
-        _PRIORITY_MAP = {"critical": "high", "important": "high", "supplementary": "medium"}
         all_dims = []
         for cat in result.get("categories", []):
             cat_name = cat.get("category_name", "")
@@ -770,6 +773,546 @@ def _create_analysis_plan(questions: List[SurveyQuestion],
         return result
     except Exception as e:
         logger.error(f"Analysis plan creation failed: {e}")
+        return None
+
+
+# ======================================================================
+# Expert Consensus Pipeline — Research Plan + Expert Panel + Synthesis
+# ======================================================================
+
+# ── Step 0.5: Research Plan ─────────────────────────────────────────
+
+_RESEARCH_PLAN_SYSTEM_PROMPT = """You are a Senior Research Planner creating a structured research brief from a survey questionnaire.
+
+## Your Task
+Analyze the questionnaire to produce a structured research brief that will guide a panel of MR experts in designing cross-tabulation banners. This brief must clearly articulate the study's purpose, research objectives, and the analytical dimensions needed to address each objective.
+
+## Process
+1. **Study Comprehension**: Understand the study type, client, category, and target audience from the questionnaire flow.
+2. **Objective Extraction**: Identify 3-7 research objectives, each linked to specific questions. Classify each as "primary" (must-have analysis) or "secondary" (nice-to-have).
+3. **Dimension Mapping**: For each objective, identify the analytical dimensions (cross-tabulation variables) needed. Each dimension should be tagged as "simple" (single question) or "composite" (combining 2+ questions).
+
+## Rules
+- Every primary objective MUST have at least one composite dimension proposed.
+- Dimensions must reference exact question numbers from the questionnaire.
+- The brief should be concise but complete — experts will rely on it exclusively.
+- Consider the study's industry context when identifying objectives and dimensions.
+
+## JSON Output Format
+{
+  "study_brief": "2-3 sentence summary for expert consumption",
+  "research_objectives": [
+    {
+      "id": "RO1",
+      "description": "Research objective description",
+      "priority": "primary or secondary",
+      "related_questions": ["Q1", "Q2", "Q3"],
+      "analytical_need": "What cross-analysis is needed to address this objective"
+    }
+  ],
+  "objective_dimension_map": [
+    {
+      "objective_id": "RO1",
+      "dimensions": [
+        {
+          "name": "Dimension name",
+          "candidate_questions": ["Q1"],
+          "type": "simple or composite",
+          "rationale": "Why this dimension is needed for the objective"
+        }
+      ]
+    }
+  ]
+}"""
+
+
+def _create_research_plan(
+    questions: List[SurveyQuestion],
+    language: str,
+    survey_context: str,
+    intelligence: dict | None,
+) -> dict | None:
+    """Step 0.5: 구조화된 연구 기획서 생성.
+
+    설문지에서 연구 목적, 분석 차원을 추출하여 전문가 패널의 입력으로 사용.
+
+    Returns:
+        연구 기획서 dict 또는 None (실패 시)
+    """
+    lines = []
+    if survey_context:
+        lines.append(survey_context)
+        lines.append("")
+
+    if intelligence:
+        objectives = intelligence.get("research_objectives", [])
+        if objectives:
+            lines.append("## Prior Intelligence — Research Objectives")
+            for obj in objectives:
+                lines.append(f"- {obj}")
+            lines.append("")
+        segments = intelligence.get("key_segments", [])
+        if segments:
+            lines.append("## Prior Intelligence — Key Segments")
+            for seg in segments:
+                lines.append(f"- {seg.get('name', '')} ({seg.get('question', '')}, {seg.get('type', '')})")
+            lines.append("")
+
+    lines.append(f"## Complete Question List ({len(questions)} questions, language: {language})")
+    lines.append("")
+    lines.append(_format_questions_compact(questions, include_options=False))
+
+    user_prompt = "\n".join(lines)
+
+    try:
+        result = _call_llm_json_with_fallback(
+            _RESEARCH_PLAN_SYSTEM_PROMPT, user_prompt,
+            MODEL_INTELLIGENCE, temperature=0.2, max_tokens=8192,
+        )
+        result.setdefault("study_brief", "")
+        result.setdefault("research_objectives", [])
+        result.setdefault("objective_dimension_map", [])
+
+        # 품질 게이트: objectives >= 3, dimensions >= 6, primary마다 composite >= 1
+        objectives = result.get("research_objectives", [])
+        dim_map = result.get("objective_dimension_map", [])
+        all_dims = [d for m in dim_map for d in m.get("dimensions", [])]
+
+        if len(objectives) < 3:
+            logger.warning(f"Research plan has only {len(objectives)} objectives (min 3)")
+        if len(all_dims) < 6:
+            logger.warning(f"Research plan has only {len(all_dims)} dimensions (min 6)")
+
+        logger.info(f"Research plan: {len(objectives)} objectives, {len(all_dims)} dimensions")
+        return result
+    except Exception as e:
+        logger.error(f"Research plan creation failed: {e}")
+        return None
+
+
+# ── Step 1 (Expert Panel): 3 Expert Personas ────────────────────────
+
+_EXPERT_COMMON_PREAMBLE = """You are part of a 3-person expert panel analyzing a survey questionnaire to design cross-tabulation banners.
+
+## Your Input
+You receive:
+1. A structured Research Plan with research objectives and dimension mapping
+2. Survey context and question list
+3. Your specific expert role and evaluation criteria
+
+## Your Task
+Independently analyze the Research Plan and questionnaire, then propose banner categories and dimensions from YOUR expert perspective. Other experts will provide different perspectives; a synthesis step will merge all views.
+
+## Output Schema (MUST follow exactly)
+{
+  "expert_name": "your_role_id",
+  "categories": [
+    {
+      "category_name": "Category name",
+      "business_rationale": "Why this category matters",
+      "priority": "critical|important|supplementary",
+      "banner_dimensions": [
+        {
+          "dimension_name": "Human-readable dimension name",
+          "candidate_questions": ["Q1", "Q2"],
+          "grouping_strategy": "Code 1,2 = Group A; Code 3,4 = Group B",
+          "is_composite": false,
+          "analytical_question": "What strategic question does this answer?",
+          "objective_ids": ["RO1"]
+        }
+      ]
+    }
+  ],
+  "priority_rankings": [
+    {"dimension_name": "...", "score": 8, "rationale": "Why this score"}
+  ],
+  "concerns": ["Issues or gaps identified"],
+  "composite_proposals": [
+    {
+      "name": "Composite segment name",
+      "questions": ["Q1", "Q2"],
+      "logic": "Combination logic description",
+      "analytical_value": "Why this composite is valuable"
+    }
+  ]
+}"""
+
+
+_EXPERT_RESEARCH_DIRECTOR_SYSTEM = _EXPERT_COMMON_PREAMBLE + """
+
+## Your Role: Research Director
+You are a senior Research Director at a top-tier MR firm (Ipsos/Kantar level).
+
+## Your Evaluation Criteria
+1. **Research Objective Coverage**: Every primary objective in the Research Plan must be addressable through at least one banner dimension.
+2. **Analysis Story Arc**: Categories should tell a coherent analytical story (e.g., "Who are they?" → "What do they do?" → "What do they think?" → "What will they do?").
+3. **Category Composition**: 4-6 categories, each with a clear strategic purpose. Category names should reflect the study's industry and objectives.
+4. **Composite Segments**: Propose at least 3 composite dimensions that combine questions to create strategic segments not visible in any single question.
+
+## Your Priorities
+- Favor categories that directly map to research objectives
+- Ensure every primary objective has at least one "critical" priority dimension
+- Think in terms of the client's decision-making: what segments would change their strategy?
+- Name categories strategically (e.g., "Brand Relationship Journey" not "Brand Questions")"""
+
+
+_EXPERT_DP_MANAGER_SYSTEM = _EXPERT_COMMON_PREAMBLE + """
+
+## Your Role: DP Manager
+You are a senior Data Processing Manager responsible for technical feasibility of cross-tabulation banners.
+
+## Your Evaluation Criteria
+1. **Code Existence**: Every grouping strategy must reference actual answer codes that exist in the questionnaire. Verify code ranges.
+2. **Mutual Exclusivity**: Banner values within a dimension must be mutually exclusive — no respondent should fall into two values.
+3. **Composite Feasibility**: For composite banners (combining 2+ questions), verify that:
+   - All referenced questions exist
+   - Filter conditions are compatible (respondents who answer Q1 also answer Q2)
+   - The AND combination produces meaningful, non-empty segments
+4. **Practical Constraints**: Flag dimensions where expected cell sizes may be too small for analysis.
+
+## Your Priorities
+- Be precise with grouping strategies: use exact codes (e.g., "Code 1,2 = Group A")
+- Flag any dimension where codes may not exist or overlap
+- For composites, specify the exact AND conditions needed
+- Reject or modify proposals that are technically infeasible
+- You have access to full answer options — USE them to verify code references"""
+
+
+_EXPERT_CLIENT_INSIGHTS_SYSTEM = _EXPERT_COMMON_PREAMBLE + """
+
+## Your Role: Client Insights Manager
+You are a senior Insights Manager who presents research findings to client brand teams.
+
+## Your Evaluation Criteria
+1. **Decision Usefulness**: Each banner dimension must help the client make a specific business decision. Ask "So what?" for every dimension.
+2. **Competitive Benchmarking**: Include dimensions that enable comparison between the client's brand and competitors.
+3. **Presentation Value**: Dimensions should produce interesting, story-worthy cross-tabulations that a VP of Marketing would find compelling.
+4. **Business Priority Scoring**: Score each dimension 1-10 on business value. Reserve 9-10 for truly differentiating insights.
+
+## Your Priorities
+- Prioritize dimensions that reveal competitive advantages/disadvantages
+- Include at least one "headline-worthy" composite segment (e.g., "Loyal Advocates" vs "At-Risk Users")
+- Ensure demographic cuts are balanced with behavioral/attitudinal dimensions
+- Think about what would make a compelling chart or headline in the final presentation"""
+
+
+def _expert_research_director(
+    research_plan: dict,
+    questions: List[SurveyQuestion],
+    language: str,
+    survey_context: str,
+) -> dict:
+    """Research Director 전문가 분석."""
+
+    lines = []
+    if survey_context:
+        lines.append(survey_context)
+        lines.append("")
+    lines.append("## Research Plan")
+    lines.append(_json.dumps(research_plan, ensure_ascii=False, indent=2))
+    lines.append("")
+    lines.append(f"## Question List ({len(questions)} questions, language: {language})")
+    lines.append(_format_questions_compact(questions, include_options=False))
+
+    result = _call_llm_json_with_fallback(
+        _EXPERT_RESEARCH_DIRECTOR_SYSTEM, "\n".join(lines),
+        MODEL_INTELLIGENCE, temperature=0.4, max_tokens=12288,
+    )
+    result.setdefault("expert_name", "research_director")
+    return result
+
+
+def _expert_dp_manager(
+    research_plan: dict,
+    questions: List[SurveyQuestion],
+    language: str,
+    survey_context: str,
+) -> dict:
+    """DP Manager 전문가 분석 — full answer options 포함."""
+
+    lines = []
+    if survey_context:
+        lines.append(survey_context)
+        lines.append("")
+    lines.append("## Research Plan")
+    lines.append(_json.dumps(research_plan, ensure_ascii=False, indent=2))
+    lines.append("")
+    # DP Manager는 코드 검증 필요 → full options 포함
+    lines.append(f"## Question List with Answer Options ({len(questions)} questions, language: {language})")
+    lines.append(_format_questions_compact(questions, include_options=True, max_option_len=300))
+
+    result = _call_llm_json_with_fallback(
+        _EXPERT_DP_MANAGER_SYSTEM, "\n".join(lines),
+        MODEL_INTELLIGENCE, temperature=0.1, max_tokens=12288,
+    )
+    result.setdefault("expert_name", "dp_manager")
+    return result
+
+
+def _expert_client_insights(
+    research_plan: dict,
+    questions: List[SurveyQuestion],
+    language: str,
+    survey_context: str,
+) -> dict:
+    """Client Insights Manager 전문가 분석."""
+
+    lines = []
+    if survey_context:
+        lines.append(survey_context)
+        lines.append("")
+    lines.append("## Research Plan")
+    lines.append(_json.dumps(research_plan, ensure_ascii=False, indent=2))
+    lines.append("")
+    lines.append(f"## Question List ({len(questions)} questions, language: {language})")
+    lines.append(_format_questions_compact(questions, include_options=False))
+
+    result = _call_llm_json_with_fallback(
+        _EXPERT_CLIENT_INSIGHTS_SYSTEM, "\n".join(lines),
+        MODEL_INTELLIGENCE, temperature=0.3, max_tokens=12288,
+    )
+    result.setdefault("expert_name", "client_insights")
+    return result
+
+
+def _run_expert_panel(
+    research_plan: dict,
+    questions: List[SurveyQuestion],
+    language: str,
+    survey_context: str,
+    progress_callback: Callable | None = None,
+) -> List[dict]:
+    """3명의 전문가 패널 병렬 실행.
+
+    ThreadPoolExecutor로 3개 LLM 호출을 동시 실행.
+
+    Returns:
+        전문가 출력 리스트 (최대 3개, 실패 시 해당 전문가 제외)
+    """
+    expert_fns = [
+        ("Research Director", _expert_research_director),
+        ("DP Manager", _expert_dp_manager),
+        ("Client Insights", _expert_client_insights),
+    ]
+    expert_outputs: List[dict] = []
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {}
+        for name, fn in expert_fns:
+            future = executor.submit(fn, research_plan, questions, language, survey_context)
+            futures[future] = name
+
+        done_count = 0
+        for future in as_completed(futures):
+            name = futures[future]
+            done_count += 1
+            try:
+                result = future.result()
+                expert_outputs.append(result)
+                if progress_callback:
+                    progress_callback("expert_done", {
+                        "name": name, "index": done_count, "total": 3,
+                    })
+                logger.info(f"Expert '{name}' completed: "
+                            f"{len(result.get('categories', []))} categories, "
+                            f"{len(result.get('composite_proposals', []))} composites")
+            except Exception as e:
+                logger.error(f"Expert '{name}' failed: {e}")
+                if progress_callback:
+                    progress_callback("expert_done", {
+                        "name": f"{name} (failed)", "index": done_count, "total": 3,
+                    })
+
+    return expert_outputs
+
+
+# ── Step 1.5: Synthesis ─────────────────────────────────────────────
+
+_SYNTHESIS_SYSTEM_PROMPT = """You are a senior Research Director synthesizing independent analyses from 3 MR experts into a unified banner analysis plan.
+
+## Expert Roles
+- **Research Director**: Strategic analysis framework, category composition, objective coverage
+- **DP Manager**: Technical feasibility, code verification, composite realizability
+- **Client Insights Manager**: Business value scoring, competitive benchmarking, presentation impact
+
+## Mediation Rules (follow strictly)
+1. **Majority Rule**: A dimension proposed by 2/3 experts → automatically included.
+2. **Minority Override**: A dimension proposed by only 1 expert with priority >= "important" → included.
+3. **Grouping Conflicts**: Use DP Manager's grouping strategy (technical accuracy priority).
+4. **Category Naming**: Use Research Director's category names (strategic framing priority).
+5. **Priority Rankings**: Use Client Insights Manager's scores (business value priority).
+6. **Composite Banners**: Only include composites that DP Manager has technically validated.
+7. **Concerns**: Address all concerns raised by any expert; document resolution.
+
+## Quality Requirements
+- Minimum 4 categories
+- Minimum 10 total dimensions across all categories
+- At least 30% composite dimensions
+- Every primary research objective must have at least 1 dimension
+- Demographics should be <= 30% of total dimensions
+
+## Output Format
+Produce an analysis plan in the EXACT format below. This will be passed directly to the banner design step.
+
+{
+  "analysis_strategy": "3-4 sentence summary of the unified analysis approach",
+  "categories": [
+    {
+      "category_name": "Category name (from Research Director)",
+      "business_rationale": "Strategic purpose",
+      "priority": "critical|important|supplementary",
+      "banner_dimensions": [
+        {
+          "dimension_name": "Human-readable name",
+          "analytical_question": "What does this dimension reveal?",
+          "candidate_questions": ["Q1", "Q2"],
+          "grouping_strategy": "From DP Manager: exact code groupings",
+          "is_composite": false
+        }
+      ]
+    }
+  ],
+  "composite_opportunities": [
+    {
+      "name": "Composite name",
+      "component_questions": ["Q1", "Q2"],
+      "logic": "Combination logic from DP Manager",
+      "analytical_value": "Business value from Client Insights"
+    }
+  ],
+  "consensus_notes": "Summary of how expert disagreements were resolved",
+  "agreement_score": 0.85,
+  "expert_contributions": {
+    "research_director": ["Key contributions from RD"],
+    "dp_manager": ["Key contributions from DP"],
+    "client_insights": ["Key contributions from CI"]
+  }
+}
+
+The agreement_score should reflect how much the experts agreed (0.0 = complete disagreement, 1.0 = perfect agreement). Consider: overlap in proposed dimensions, consistency in priority ratings, and alignment on composite proposals."""
+
+
+def _synthesize_expert_consensus(
+    expert_outputs: List[dict],
+    research_plan: dict,
+    questions: List[SurveyQuestion],
+    language: str,
+) -> dict | None:
+    """3명의 전문가 출력을 중재 규칙으로 통합하여 합의 분석 계획 생성.
+
+    Returns:
+        합의 분석 계획 dict (기존 _create_analysis_plan 출력 호환) 또는 None
+    """
+
+
+    if not expert_outputs:
+        logger.warning("No expert outputs to synthesize")
+        return None
+
+    lines = []
+    lines.append(f"## Research Plan (language: {language})")
+    lines.append(_json.dumps(research_plan, ensure_ascii=False, indent=2))
+    lines.append("")
+
+    for i, expert in enumerate(expert_outputs):
+        name = expert.get("expert_name", f"expert_{i}")
+        lines.append(f"## Expert {i+1}: {name}")
+        lines.append(_json.dumps(expert, ensure_ascii=False, indent=2))
+        lines.append("")
+
+    user_prompt = "\n".join(lines)
+
+    try:
+        result = _call_llm_json_with_fallback(
+            _SYNTHESIS_SYSTEM_PROMPT, user_prompt,
+            MODEL_INTELLIGENCE, temperature=0.15, max_tokens=16384,
+        )
+        result.setdefault("analysis_strategy", "")
+        result.setdefault("categories", [])
+        result.setdefault("composite_opportunities", [])
+        result.setdefault("consensus_notes", "")
+        result.setdefault("agreement_score", 0.0)
+        result.setdefault("expert_contributions", {})
+
+        # 기존 파이프라인 호환: banner_dimensions 플랫 리스트 생성
+        all_dims = []
+        for cat in result.get("categories", []):
+            cat_name = cat.get("category_name", "")
+            cat_priority = _PRIORITY_MAP.get(cat.get("priority", ""), "high")
+            for dim in cat.get("banner_dimensions", []):
+                dim["category"] = cat_name
+                if dim.get("is_composite"):
+                    dim.setdefault("variable_type", "composite")
+                dim.setdefault("priority", cat_priority)
+                all_dims.append(dim)
+        result["banner_dimensions"] = all_dims
+
+        # CoT reasoning placeholder (UI 호환)
+        result.setdefault("cot_reasoning", {
+            "study_type": research_plan.get("study_brief", ""),
+            "client_brand": "",
+            "core_research_questions": [
+                obj.get("description", "")
+                for obj in research_plan.get("research_objectives", [])
+                if obj.get("priority") == "primary"
+            ],
+            "perspective_rationale": result.get("consensus_notes", ""),
+        })
+
+        # _research_plan 원본 참조 보존
+        result["_research_plan"] = research_plan
+
+        score = result.get("agreement_score", 0)
+        logger.info(f"Expert consensus: {len(result['categories'])} categories, "
+                    f"{len(all_dims)} dimensions, agreement={score:.2f}")
+        return result
+    except Exception as e:
+        logger.error(f"Expert synthesis failed: {e}")
+        # 폴백: Research Director 단독 출력 사용
+        rd_output = next((e for e in expert_outputs
+                          if e.get("expert_name") == "research_director"), None)
+        if rd_output:
+            logger.warning("Falling back to Research Director output only")
+            # RD 출력을 analysis plan 형태로 변환
+            # composite_proposals → composite_opportunities 필드명 변환
+            raw_composites = rd_output.get("composite_proposals", [])
+            composites = []
+            for comp in raw_composites:
+                composites.append({
+                    "name": comp.get("name", ""),
+                    "component_questions": comp.get("questions", comp.get("component_questions", [])),
+                    "logic": comp.get("logic", ""),
+                    "analytical_value": comp.get("analytical_value", ""),
+                })
+            fallback = {
+                "analysis_strategy": "Single-expert fallback (Research Director only)",
+                "categories": rd_output.get("categories", []),
+                "composite_opportunities": composites,
+                "consensus_notes": "Synthesis failed — using Research Director output only",
+                "agreement_score": 0.0,
+                "expert_contributions": {"research_director": ["Sole contributor (fallback)"]},
+                "_research_plan": research_plan,
+            }
+            # banner_dimensions 플랫 리스트 생성
+            all_dims = []
+            for cat in fallback.get("categories", []):
+                for dim in cat.get("banner_dimensions", []):
+                    dim["category"] = cat.get("category_name", "")
+                    if dim.get("is_composite"):
+                        dim.setdefault("variable_type", "composite")
+                    all_dims.append(dim)
+            fallback["banner_dimensions"] = all_dims
+            fallback["cot_reasoning"] = {
+                "study_type": research_plan.get("study_brief", ""),
+                "client_brand": "",
+                "core_research_questions": [
+                    obj.get("description", "")
+                    for obj in research_plan.get("research_objectives", [])
+                    if obj.get("priority") == "primary"
+                ],
+                "perspective_rationale": "Fallback: Research Director only",
+            }
+            return fallback
         return None
 
 
@@ -922,7 +1465,7 @@ def _design_banners_from_plan(analysis_plan: dict,
         return None
 
     # 프롬프트 구성
-    import json as _json
+
     lines = []
     if survey_context:
         lines.append(survey_context)
@@ -1046,7 +1589,7 @@ def _validate_banners(banner_spec: dict,
     """
     code_map = _build_code_map(questions)
 
-    import json as _json
+
     lines = []
     lines.append("## Banners to Validate")
     lines.append(_json.dumps(banner_spec, ensure_ascii=False, indent=2))
@@ -1640,6 +2183,7 @@ def _assess_plan_quality(plan: dict) -> dict:
     demo_dim_ratio = demo_dim_count / total if total > 0 else 0
 
     issues = []
+    warnings = []
     if total < 8:
         issues.append(f"Only {total} dimensions (minimum: 8)")
     if composite_ratio < 0.25:
@@ -1653,6 +2197,32 @@ def _assess_plan_quality(plan: dict) -> dict:
     if total >= 6 and demo_dim_ratio > 0.40:
         issues.append(f"Demographic dimensions {demo_dim_count}/{total} ({demo_dim_ratio:.0%}) — add behavioral/attitudinal dimensions")
 
+    # ── Expert Consensus 관련 품질 체크 ──
+    agreement_score = plan.get("agreement_score", None)
+    if agreement_score is not None and agreement_score < 0.6:
+        warnings.append(f"Low expert agreement score: {agreement_score:.2f}")
+
+    # Research Plan 기반: primary objective 커버리지 체크
+    research_plan = plan.get("_research_plan")
+    if research_plan:
+        primary_objs = [
+            obj for obj in research_plan.get("research_objectives", [])
+            if obj.get("priority") == "primary"
+        ]
+        if primary_objs:
+            # 각 primary objective의 related_questions가 dims에 포함되는지 확인
+            dim_questions = set()
+            for d in dims:
+                for qn in d.get("candidate_questions", []):
+                    dim_questions.add(qn)
+            uncovered = []
+            for obj in primary_objs:
+                related = set(obj.get("related_questions", []))
+                if related and not (related & dim_questions):
+                    uncovered.append(obj.get("id", obj.get("description", "")[:30]))
+            if uncovered:
+                warnings.append(f"Uncovered primary objectives: {', '.join(uncovered)}")
+
     return {
         "total_dims": total,
         "composite_dims": composite_count,
@@ -1661,24 +2231,29 @@ def _assess_plan_quality(plan: dict) -> dict:
         "has_non_demo_category": has_non_demo_category,
         "demo_dim_ratio": round(demo_dim_ratio, 2),
         "issues": issues,
+        "warnings": warnings,
         "pass": len(issues) == 0,
     }
 
 
-def suggest_banner_points(questions: List[SurveyQuestion],
-                          language: str = "ko",
-                          survey_context: str = "",
-                          intelligence: dict | None = None) -> tuple[List[Banner], dict | None]:
-    """3단계 CoT 파이프라인으로 배너 후보 제안.
+def suggest_banner_points(
+    questions: List[SurveyQuestion],
+    language: str = "ko",
+    survey_context: str = "",
+    intelligence: dict | None = None,
+    progress_callback: Callable | None = None,
+) -> tuple[List[Banner], dict | None]:
+    """Expert Consensus 파이프라인으로 배너 후보 제안.
 
-    Step 1 (Analysis Plan) → Step 2 (Banner Design) → Step 3 (Validation)
-    각 단계에서 품질 미달 시 1회 재시도. 실패 시 graceful degradation.
+    Research Plan → Expert Panel (3명 병렬) → Synthesis → Banner Design → Validation
+    각 단계에서 품질 미달 시 재시도. 실패 시 graceful degradation.
 
     Args:
         questions: 전체 문항 리스트
         language: 설문지 언어
         survey_context: Study Brief + Intelligence + Question Flow
         intelligence: Survey Intelligence 결과 dict
+        progress_callback: (event, data) 진행 상태 콜백
 
     Returns:
         tuple: (배너 리스트, 분석 계획 dict 또는 None)
@@ -1686,39 +2261,73 @@ def suggest_banner_points(questions: List[SurveyQuestion],
     if not questions:
         return [], None
 
-    analysis_plan = None
+    def _cb(event: str, data: dict):
+        if progress_callback:
+            progress_callback(event, data)
 
-    # ── Step 1: Analysis Plan (with quality gate) ──
-    for attempt in range(_MAX_RETRY + 1):
-        tag = f" (retry {attempt})" if attempt > 0 else ""
-        logger.info(f"Banner pipeline Step 1: Creating analysis plan...{tag}")
-        analysis_plan = _create_analysis_plan(questions, language, survey_context, intelligence)
+    # ── Step 0.5: Research Plan ──
+    _cb("phase", {"name": "research_plan", "status": "start"})
+    logger.info("Banner pipeline Step 0.5: Creating research plan...")
+    research_plan = _create_research_plan(questions, language, survey_context, intelligence)
+    _cb("phase", {"name": "research_plan", "status": "done"})
 
-        if not analysis_plan or not analysis_plan.get("banner_dimensions"):
-            logger.warning("Step 1 failed or empty — falling back to heuristic candidate selection")
-            candidates = _fallback_heuristic_candidates(questions, intelligence)
-            if not candidates:
-                return [], None
-            banners = _fallback_direct_banner(candidates, survey_context, language)
-            return banners, None
+    if not research_plan or not research_plan.get("research_objectives"):
+        logger.warning("Research plan failed — falling back to legacy analysis plan")
+        return _suggest_banner_points_legacy(
+            questions, language, survey_context, intelligence, progress_callback,
+        )
 
-        plan_quality = _assess_plan_quality(analysis_plan)
-        if plan_quality["pass"]:
-            logger.info(f"Step 1 quality OK: {plan_quality['total_dims']} dims, "
-                        f"{plan_quality['composite_dims']} composite, "
-                        f"{plan_quality['category_count']} categories")
-            break
+    # ── Step 1: Expert Panel (3명 병렬) ──
+    _cb("phase", {"name": "expert_panel", "status": "start", "count": 3})
+    logger.info("Banner pipeline Step 1: Running expert panel (3 experts in parallel)...")
+    expert_outputs = _run_expert_panel(
+        research_plan, questions, language, survey_context,
+        progress_callback=progress_callback,
+    )
 
-        if attempt < _MAX_RETRY:
-            logger.warning(f"Step 1 quality below threshold: {plan_quality['issues']} — retrying")
-        else:
-            logger.warning(f"Step 1 quality below threshold after retries: {plan_quality['issues']} — proceeding anyway")
+    if len(expert_outputs) < 2:
+        logger.warning(f"Only {len(expert_outputs)} expert(s) succeeded (need >=2 for consensus) "
+                       "— falling back to legacy analysis plan")
+        return _suggest_banner_points_legacy(
+            questions, language, survey_context, intelligence, progress_callback,
+        )
+
+    # ── Step 1.5: Synthesis ──
+    _cb("phase", {"name": "synthesis", "status": "start"})
+    logger.info("Banner pipeline Step 1.5: Synthesizing expert consensus...")
+    analysis_plan = _synthesize_expert_consensus(
+        expert_outputs, research_plan, questions, language,
+    )
+
+    if not analysis_plan or not analysis_plan.get("banner_dimensions"):
+        logger.warning("Synthesis failed — falling back to legacy analysis plan")
+        return _suggest_banner_points_legacy(
+            questions, language, survey_context, intelligence, progress_callback,
+        )
+
+    try:
+        agreement = float(analysis_plan.get("agreement_score", 0))
+    except (TypeError, ValueError):
+        agreement = 0.0
+    analysis_plan["agreement_score"] = agreement
+    _cb("phase", {"name": "synthesis", "status": "done", "agreement_score": agreement})
+
+    # Store expert outputs and research plan in analysis_plan for UI access
+    analysis_plan["_expert_outputs"] = expert_outputs
+    if "_research_plan" not in analysis_plan:
+        analysis_plan["_research_plan"] = research_plan
+
+    # ── Quality Gate ──
+    plan_quality = _assess_plan_quality(analysis_plan)
+    if not plan_quality["pass"]:
+        logger.warning(f"Consensus plan quality below threshold: {plan_quality['issues']} — proceeding anyway")
 
     # ── Step 2: Banner Design (with quality gate) ──
+    _cb("phase", {"name": "banner_design", "status": "start"})
     banner_spec = None
     for attempt in range(_MAX_RETRY + 1):
         tag = f" (retry {attempt})" if attempt > 0 else ""
-        logger.info(f"Banner pipeline Step 2: Designing banners from plan...{tag}")
+        logger.info(f"Banner pipeline Step 2: Designing banners from consensus plan...{tag}")
         banner_spec = _design_banners_from_plan(analysis_plan, questions, language, survey_context)
 
         if not banner_spec or not banner_spec.get("banners"):
@@ -1739,11 +2348,13 @@ def suggest_banner_points(questions: List[SurveyQuestion],
             logger.warning(f"Step 2 quality below threshold: {banner_quality['issues']} — retrying")
         else:
             logger.warning(f"Step 2 quality below threshold after retries: {banner_quality['issues']} — proceeding anyway")
+    _cb("phase", {"name": "banner_design", "status": "done"})
 
     # ── Step 2.5: Assign categories from analysis plan (robust fallback) ──
     _assign_categories_from_plan(banner_spec, analysis_plan)
 
     # ── Step 3: Validation ──
+    _cb("phase", {"name": "validation", "status": "start"})
     logger.info("Banner pipeline Step 3: Validating banners...")
     validated_spec = _validate_banners(banner_spec, questions)
 
@@ -1753,10 +2364,8 @@ def suggest_banner_points(questions: List[SurveyQuestion],
                     for ob in orig_banners if ob.get("name")}
     for i, vb in enumerate(validated_spec.get("banners", [])):
         if not vb.get("category"):
-            # Try 1: index-based (same position = same banner)
             if i < len(orig_banners):
                 vb["category"] = orig_banners[i].get("category", "")
-            # Try 2: name-based fallback
             if not vb.get("category"):
                 vb["category"] = orig_cat_map.get(vb.get("name", ""), "")
 
@@ -1764,9 +2373,9 @@ def suggest_banner_points(questions: List[SurveyQuestion],
     banners = _parse_banner_spec_to_models(validated_spec)
 
     if not banners:
-        # 검증 후 모든 배너가 제거된 경우 Step 2 원본 사용
         logger.warning("Validation removed all banners — using pre-validation results")
         banners = _parse_banner_spec_to_models(banner_spec)
+    _cb("phase", {"name": "validation", "status": "done"})
 
     # ── Final quality log ──
     composite_final = sum(1 for b in banners if b.banner_type == "composite")
@@ -1774,6 +2383,98 @@ def suggest_banner_points(questions: List[SurveyQuestion],
     total_pts = sum(len(b.points) for b in banners)
     avg_pts = total_pts / len(banners) if banners else 0
     logger.info(f"Banner pipeline complete: {len(banners)} banners "
+                f"({composite_final} composite, {cat_final} categories, "
+                f"{total_pts} total values, avg {avg_pts:.1f}/banner) "
+                f"[agreement={agreement:.2f}]")
+    return banners, analysis_plan
+
+
+def _suggest_banner_points_legacy(
+    questions: List[SurveyQuestion],
+    language: str = "ko",
+    survey_context: str = "",
+    intelligence: dict | None = None,
+    progress_callback: Callable | None = None,
+) -> tuple[List[Banner], dict | None]:
+    """Legacy 파이프라인 (폴백): Analysis Plan → Banner Design → Validation.
+
+    Expert consensus 실패 시 사용되는 기존 3-step CoT 파이프라인.
+    """
+    def _cb(event: str, data: dict):
+        if progress_callback:
+            progress_callback(event, data)
+
+    analysis_plan = None
+
+    # ── Step 1: Analysis Plan (with quality gate) ──
+    _cb("phase", {"name": "banner_design", "status": "start"})
+    for attempt in range(_MAX_RETRY + 1):
+        tag = f" (retry {attempt})" if attempt > 0 else ""
+        logger.info(f"Legacy pipeline Step 1: Creating analysis plan...{tag}")
+        analysis_plan = _create_analysis_plan(questions, language, survey_context, intelligence)
+
+        if not analysis_plan or not analysis_plan.get("banner_dimensions"):
+            logger.warning("Step 1 failed or empty — falling back to heuristic")
+            candidates = _fallback_heuristic_candidates(questions, intelligence)
+            if not candidates:
+                return [], None
+            banners = _fallback_direct_banner(candidates, survey_context, language)
+            return banners, None
+
+        plan_quality = _assess_plan_quality(analysis_plan)
+        if plan_quality["pass"]:
+            break
+        if attempt < _MAX_RETRY:
+            logger.warning(f"Step 1 quality: {plan_quality['issues']} — retrying")
+        else:
+            logger.warning(f"Step 1 quality: {plan_quality['issues']} — proceeding")
+
+    # ── Step 2: Banner Design (with quality gate) ──
+    banner_spec = None
+    for attempt in range(_MAX_RETRY + 1):
+        tag = f" (retry {attempt})" if attempt > 0 else ""
+        logger.info(f"Legacy pipeline Step 2: Designing banners...{tag}")
+        banner_spec = _design_banners_from_plan(analysis_plan, questions, language, survey_context)
+
+        if not banner_spec or not banner_spec.get("banners"):
+            return [], analysis_plan
+
+        banner_quality = _assess_banner_quality(banner_spec)
+        if banner_quality["pass"]:
+            break
+        if attempt < _MAX_RETRY:
+            logger.warning(f"Step 2 quality: {banner_quality['issues']} — retrying")
+        else:
+            logger.warning(f"Step 2 quality: {banner_quality['issues']} — proceeding")
+    _cb("phase", {"name": "banner_design", "status": "done"})
+
+    _assign_categories_from_plan(banner_spec, analysis_plan)
+
+    # ── Step 3: Validation ──
+    _cb("phase", {"name": "validation", "status": "start"})
+    logger.info("Legacy pipeline Step 3: Validating banners...")
+    validated_spec = _validate_banners(banner_spec, questions)
+
+    orig_banners = banner_spec.get("banners", [])
+    orig_cat_map = {ob.get("name", ""): ob.get("category", "")
+                    for ob in orig_banners if ob.get("name")}
+    for i, vb in enumerate(validated_spec.get("banners", [])):
+        if not vb.get("category"):
+            if i < len(orig_banners):
+                vb["category"] = orig_banners[i].get("category", "")
+            if not vb.get("category"):
+                vb["category"] = orig_cat_map.get(vb.get("name", ""), "")
+
+    banners = _parse_banner_spec_to_models(validated_spec)
+    if not banners:
+        banners = _parse_banner_spec_to_models(banner_spec)
+    _cb("phase", {"name": "validation", "status": "done"})
+
+    composite_final = sum(1 for b in banners if b.banner_type == "composite")
+    cat_final = len(set(b.category for b in banners if b.category))
+    total_pts = sum(len(b.points) for b in banners)
+    avg_pts = total_pts / len(banners) if banners else 0
+    logger.info(f"Legacy pipeline complete: {len(banners)} banners "
                 f"({composite_final} composite, {cat_final} categories, "
                 f"{total_pts} total values, avg {avg_pts:.1f}/banner)")
     return banners, analysis_plan

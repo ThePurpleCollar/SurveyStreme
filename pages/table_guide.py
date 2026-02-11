@@ -915,13 +915,49 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
                                 key="suggest_banners_btn")
 
     if suggest_clicked:
-        with st.spinner("Analyzing questions for banner candidates..."):
+        with st.status("Generating banners with expert consensus...", expanded=True) as status:
+            status_text = st.empty()
+            expert_area = st.empty()
+
+            def _progress_cb(event, data):
+                if event == "phase":
+                    name = data.get("name", "")
+                    phase_status = data.get("status", "")
+                    _PHASE_LABELS = {
+                        "research_plan": "Creating research plan",
+                        "expert_panel": "Expert panel analyzing",
+                        "synthesis": "Building expert consensus",
+                        "banner_design": "Designing banners from consensus plan",
+                        "validation": "Validating banner codes",
+                    }
+                    label = _PHASE_LABELS.get(name, name)
+                    if phase_status == "start":
+                        extra = ""
+                        if name == "expert_panel":
+                            extra = f" ({data.get('count', 3)} experts in parallel)"
+                        status_text.markdown(f"**{label}{extra}...**")
+                    elif phase_status == "done":
+                        extra = ""
+                        if name == "synthesis":
+                            score = data.get("agreement_score", 0)
+                            extra = f" (agreement: {score:.0%})"
+                        status_text.markdown(f":white_check_mark: {label}{extra}")
+                elif event == "expert_done":
+                    expert_area.markdown(
+                        f"  :white_check_mark: {data.get('name', '')} complete "
+                        f"({data.get('index', 0)}/{data.get('total', 3)})"
+                    )
+
             doc = st.session_state.get("survey_document")
             intel = doc.survey_intelligence if doc else None
             survey_ctx = _get_survey_context()
-            suggested, plan = suggest_banner_points(questions, language,
-                                                     survey_context=survey_ctx,
-                                                     intelligence=intel)
+            suggested, plan = suggest_banner_points(
+                questions, language,
+                survey_context=survey_ctx,
+                intelligence=intel,
+                progress_callback=_progress_cb,
+            )
+
             if suggested:
                 doc = st.session_state.get("survey_document")
                 if doc:
@@ -929,20 +965,106 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
                 st.session_state["banners_suggested"] = True
                 if plan:
                     st.session_state["banner_analysis_plan"] = plan
-                st.success(f"Found {len(suggested)} banner group(s) with "
-                          f"{sum(len(b.points) for b in suggested)} points!")
-            else:
-                st.info("No suitable banner candidates found.")
+                    # 연구 기획서 및 전문가 출력 세션 저장
+                    rp = plan.get("_research_plan")
+                    if rp:
+                        st.session_state["banner_research_plan"] = rp
+                    eo = plan.get("_expert_outputs")
+                    if eo:
+                        st.session_state["banner_expert_outputs"] = eo
+                    st.session_state["banner_consensus_score"] = plan.get("agreement_score", 0)
 
-    # ── Analysis Plan 표시 ──
+                n_banners = len(suggested)
+                n_cats = len(set(b.category for b in suggested if b.category))
+                agreement = plan.get("agreement_score", 0) if plan else 0
+                summary = f"Done! {n_banners} banners in {n_cats} categories"
+                if agreement > 0:
+                    summary += f" (agreement: {agreement:.0%})"
+                status.update(label=summary, state="complete")
+            else:
+                status.update(label="No suitable banner candidates found.", state="error")
+
+    # ── Analysis Plan & Consensus 표시 ──
     plan = st.session_state.get("banner_analysis_plan")
     if plan:
+        # ── Research Plan 섹션 ──
+        research_plan = st.session_state.get("banner_research_plan") or plan.get("_research_plan")
+        if research_plan:
+            with st.expander("Research Plan", expanded=False):
+                brief = research_plan.get("study_brief", "")
+                if brief:
+                    st.markdown(f"**Study Brief:** {brief}")
+
+                objectives = research_plan.get("research_objectives", [])
+                if objectives:
+                    st.markdown("**Research Objectives:**")
+                    _OBJ_ICON = {"primary": ":red_circle:", "secondary": ":yellow_circle:"}
+                    for obj in objectives:
+                        icon = _OBJ_ICON.get(obj.get("priority", ""), ":white_circle:")
+                        related = ", ".join(obj.get("related_questions", []))
+                        st.markdown(f"- {icon} **{obj.get('id', '')}**: {obj.get('description', '')}")
+                        if related:
+                            st.caption(f"  Questions: {related}")
+                        need = obj.get("analytical_need", "")
+                        if need:
+                            st.caption(f"  Need: {need}")
+
+                dim_map = research_plan.get("objective_dimension_map", [])
+                if dim_map:
+                    st.markdown("---")
+                    st.markdown("**Objective-Dimension Mapping:**")
+                    rows = []
+                    for mapping in dim_map:
+                        obj_id = mapping.get("objective_id", "")
+                        for dim in mapping.get("dimensions", []):
+                            rows.append({
+                                "Objective": obj_id,
+                                "Dimension": dim.get("name", ""),
+                                "Type": dim.get("type", ""),
+                                "Questions": ", ".join(dim.get("candidate_questions", [])),
+                            })
+                    if rows:
+                        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+        # ── Expert Consensus 섹션 ──
+        consensus_notes = plan.get("consensus_notes", "")
+        agreement_score = plan.get("agreement_score", 0)
+        expert_contribs = plan.get("expert_contributions", {})
+        if consensus_notes or agreement_score or expert_contribs:
+            with st.expander("Expert Consensus", expanded=False):
+                if agreement_score:
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        st.metric("Agreement", f"{agreement_score:.0%}")
+                    with col2:
+                        st.progress(min(agreement_score, 1.0))
+
+                if consensus_notes:
+                    st.markdown(f"**Consensus Notes:** {consensus_notes}")
+
+                if expert_contribs:
+                    st.markdown("**Expert Contributions:**")
+                    _EXPERT_ICON = {
+                        "research_director": ":blue_book:",
+                        "dp_manager": ":wrench:",
+                        "client_insights": ":bar_chart:",
+                    }
+                    for expert_name, contribs in expert_contribs.items():
+                        icon = _EXPERT_ICON.get(expert_name, ":bust_in_silhouette:")
+                        label = expert_name.replace("_", " ").title()
+                        items = ", ".join(contribs) if isinstance(contribs, list) else str(contribs)
+                        st.markdown(f"- {icon} **{label}**: {items}")
+
+        # ── 기존 Categories/Dimensions 표시 ──
         with st.expander("Analysis Plan", expanded=False):
-            # CoT reasoning 표시
             cot = plan.get("cot_reasoning", {})
             if cot:
-                st.markdown(f"**Study Type:** {cot.get('study_type', '')}")
-                st.markdown(f"**Client Brand:** {cot.get('client_brand', '')}")
+                study_type = cot.get("study_type", "")
+                if study_type:
+                    st.markdown(f"**Study Type:** {study_type}")
+                client_brand = cot.get("client_brand", "")
+                if client_brand:
+                    st.markdown(f"**Client Brand:** {client_brand}")
                 questions_list = cot.get("core_research_questions", [])
                 if questions_list:
                     st.markdown("**Core Research Questions:**")
@@ -975,7 +1097,6 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
                         st.caption(f"  {dim.get('analytical_question', '')}")
                     st.markdown("")
             else:
-                # Fallback for old-style plans
                 dims = plan.get("banner_dimensions", [])
                 if dims:
                     st.markdown("**Banner Dimensions:**")
@@ -1426,7 +1547,15 @@ def _run_generate_all(df: pd.DataFrame, language: str):
                     doc.banners = suggested
             if plan:
                 st.session_state["banner_analysis_plan"] = plan
-            st.session_state["banners_suggested"] = True
+                rp = plan.get("_research_plan")
+                if rp:
+                    st.session_state["banner_research_plan"] = rp
+                eo = plan.get("_expert_outputs")
+                if eo:
+                    st.session_state["banner_expert_outputs"] = eo
+                st.session_state["banner_consensus_score"] = plan.get("agreement_score", 0)
+            if suggested:
+                st.session_state["banners_suggested"] = True
 
         # ── 배너 할당 (배너 생성 후 순차) ──
         if "banner" in results and doc and doc.banners:
