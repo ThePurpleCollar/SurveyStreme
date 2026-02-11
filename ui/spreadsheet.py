@@ -23,7 +23,7 @@ def render_spreadsheet_view(survey_doc: SurveyDocument) -> pd.DataFrame:
     # 표시할 컬럼 순서
     display_columns = [
         "QuestionNumber", "TableNumber", "QuestionText", "QuestionType",
-        "AnswerOptions", "SkipLogic", "Filter", "ResponseBase",
+        "AnswerOptions", "SkipLogic", "Filter",
         "Instructions", "SummaryType"
     ]
 
@@ -38,7 +38,6 @@ def render_spreadsheet_view(survey_doc: SurveyDocument) -> pd.DataFrame:
         "AnswerOptions": st.column_config.TextColumn("Answer Options", width="large"),
         "SkipLogic": st.column_config.TextColumn("Skip Logic", width="medium"),
         "Filter": st.column_config.TextColumn("Filter", width="medium"),
-        "ResponseBase": st.column_config.TextColumn("Response Base", width="small"),
         "Instructions": st.column_config.TextColumn("Instructions", width="medium"),
         "SummaryType": st.column_config.TextColumn("Summary Type", width="medium"),
     }

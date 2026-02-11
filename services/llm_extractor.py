@@ -13,11 +13,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 from models.survey import SurveyQuestion
 
-_GEMINI_MODELS = {'gemini-2.5-flash', 'gemini-2.5-pro'}
-
-
 def _is_gemini(model: str) -> bool:
-    return model in _GEMINI_MODELS
+    """모델명이 Gemini 계열인지 판별 (llm_client.py와 동일 로직)."""
+    return model.startswith("gemini")
 
 logger = logging.getLogger(__name__)
 
@@ -878,15 +876,24 @@ def _call_gemini(model: str, system_prompt: str,
 
     response = gemini.generate_content(user_prompt, generation_config=gen_config)
 
+    if not response.candidates:
+        raise ValueError("Gemini response blocked or empty (no candidates)")
+
     finish_reason = None
-    if response.candidates and response.candidates[0].finish_reason:
+    if response.candidates[0].finish_reason:
         fr = response.candidates[0].finish_reason
         # Vertex AI uses enum (e.g., FinishReason.MAX_TOKENS)
         finish_reason = fr.name if hasattr(fr, 'name') else str(fr)
         if finish_reason == 'MAX_TOKENS':
             finish_reason = 'length'
 
-    return response.text.strip(), finish_reason
+    try:
+        raw_text = response.text.strip()
+    except ValueError:
+        block_reason = getattr(response.candidates[0], "finish_reason", "unknown")
+        raise ValueError(f"Gemini response blocked (reason: {block_reason})")
+
+    return raw_text, finish_reason
 
 
 def extract_questions_from_chunk(
@@ -950,6 +957,8 @@ def merge_chunk_results(chunk_results: List[List[dict]]) -> List[dict]:
     merged = []
 
     for chunk_questions in chunk_results:
+        if not chunk_questions:
+            continue
         for q in chunk_questions:
             qn = q["question_number"]
             if qn in seen:
@@ -1136,7 +1145,12 @@ def extract_survey_questions(
         with ThreadPoolExecutor(max_workers=min(total_chunks, 4)) as executor:
             futures = {executor.submit(_extract, i): i for i in range(total_chunks)}
             for future in as_completed(futures):
-                idx, result = future.result()
+                try:
+                    idx, result = future.result()
+                except Exception as e:
+                    idx = futures[future]
+                    result = []
+                    logger.error(f"Chunk {idx} extraction failed: {e}")
                 chunk_results[idx] = result
                 _notify("chunk_done", {
                     "chunk_index": idx, "total_chunks": total_chunks,

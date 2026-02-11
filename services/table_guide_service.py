@@ -81,11 +81,14 @@ def _call_llm_json_with_fallback(system_prompt: str, user_prompt: str,
         f"{user_prompt}"
     )
     max_tokens = kwargs.get("max_tokens", 8192)
+    temperature = kwargs.get("temperature", 0.2)
+    top_p = kwargs.get("top_p", 0.8)
 
     last_error = None
     for attempt in range(2):
         try:
-            raw = call_llm(full_prompt, model, max_tokens=max_tokens)
+            raw = call_llm(full_prompt, model, max_tokens=max_tokens,
+                           temperature=temperature, top_p=top_p)
             return _extract_json_from_text(raw)
         except Exception as e:
             last_error = e

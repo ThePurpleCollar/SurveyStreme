@@ -4,11 +4,11 @@ from docx import Document
 
 def read_pdf(file):
     """PDF 파일에서 텍스트를 추출"""
-    doc = fitz.open(stream=file.read(), filetype="pdf")
-    texts = []
-    for page in doc:
-        texts.append(page.get_text("text"))
-    return texts
+    with fitz.open(stream=file.read(), filetype="pdf") as doc:
+        texts = []
+        for page in doc:
+            texts.append(page.get_text("text"))
+        return texts
 
 
 def read_docx_without_strikethrough(file):

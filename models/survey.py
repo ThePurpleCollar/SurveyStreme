@@ -286,7 +286,7 @@ class SurveyDocument:
         if not self.questions:
             return pd.DataFrame(columns=[
                 "QuestionNumber", "TableNumber", "QuestionText", "QuestionType",
-                "AnswerOptions", "SkipLogic", "Filter", "ResponseBase",
+                "AnswerOptions", "SkipLogic", "Filter",
                 "Instructions", "SummaryType", "TableTitle", "GrammarChecker",
                 "Base", "NetRecode", "Sort", "SubBanner", "BannerIDs",
                 "SpecialInstructions", "Role", "VariableType",

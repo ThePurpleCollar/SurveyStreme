@@ -20,7 +20,7 @@ def df_for_download(processed_df):
                     'NetRecode', 'BannerIDs', 'SpecialInstructions', 'Other', 'GrammarChecker']
 
     # DOCX 추출에서 추가되는 컬럼들
-    extra_columns = ['AnswerOptions', 'SkipLogic', 'Filter', 'ResponseBase', 'Instructions']
+    extra_columns = ['AnswerOptions', 'SkipLogic', 'Filter', 'Instructions']
     all_columns = base_columns + [c for c in extra_columns if c in processed_df.columns]
 
     return processed_df.reindex(columns=all_columns)

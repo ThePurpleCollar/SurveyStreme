@@ -17,6 +17,7 @@ from models.survey import Banner, BannerPoint
 from services.llm_client import call_llm_json, MODEL_TITLE_GENERATOR
 from services.survey_context import build_survey_context
 from services.table_guide_service import (
+    _banner_id_from_index,
     analyze_survey_intelligence,
     assign_banners_to_questions,
     compile_table_guide, expand_banner_ids, export_table_guide_excel,
@@ -1129,7 +1130,7 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
     # Add Banner 버튼
     if st.button("Add Banner", key="add_banner_btn"):
         if doc:
-            next_id = chr(65 + len(banners))  # A, B, C...
+            next_id = _banner_id_from_index(len(banners))  # A, B, C... AA, AB...
             doc.banners.append(Banner(banner_id=next_id, name=f"Banner {next_id}", points=[]))
             st.rerun()
 

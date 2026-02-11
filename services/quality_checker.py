@@ -358,7 +358,7 @@ def check_survey_quality(
                 indexed_results[idx] = results
 
         for batch_results in indexed_results:
-            if batch_results:
+            if batch_results is not None:
                 all_results.extend(batch_results)
 
     # 원본 문항 순서로 정렬

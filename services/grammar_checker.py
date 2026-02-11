@@ -5,6 +5,8 @@ UI 렌더링은 포함하지 않으며 pages/quality_checker.py에서 호출한�
 """
 
 import logging
+from typing import Callable, Optional
+
 import pandas as pd
 import streamlit as st
 
@@ -181,7 +183,7 @@ def _parse_batch_result(raw: dict, batch: list) -> list:
 
 # ── 메인 처리 ─────────────────────────────────────────────────────
 
-def check_grammar(df: pd.DataFrame, language: str, progress_callback) -> list:
+def check_grammar(df: pd.DataFrame, language: str, progress_callback: Optional[Callable] = None) -> list:
     """DataFrame에서 문항을 추출하여 배치 문법 검사를 수행.
 
     Returns:
@@ -212,11 +214,12 @@ def check_grammar(df: pd.DataFrame, language: str, progress_callback) -> list:
     all_results = []
 
     for batch_idx, batch in enumerate(batches):
-        progress_callback("batch_start", {
-            "batch_index": batch_idx,
-            "total_batches": total_batches,
-            "question_count": len(batch),
-        })
+        if progress_callback:
+            progress_callback("batch_start", {
+                "batch_index": batch_idx,
+                "total_batches": total_batches,
+                "question_count": len(batch),
+            })
 
         user_prompt = _build_batch_prompt(batch)
         try:
@@ -237,11 +240,12 @@ def check_grammar(df: pd.DataFrame, language: str, progress_callback) -> list:
 
         all_results.extend(results)
 
-        progress_callback("batch_done", {
-            "batch_index": batch_idx,
-            "total_batches": total_batches,
-            "changed_count": sum(1 for r in results if r["has_changes"]),
-        })
+        if progress_callback:
+            progress_callback("batch_done", {
+                "batch_index": batch_idx,
+                "total_batches": total_batches,
+                "changed_count": sum(1 for r in results if r["has_changes"]),
+            })
 
     return all_results
 

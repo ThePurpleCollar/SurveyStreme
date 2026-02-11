@@ -132,7 +132,15 @@ def call_llm(prompt: str, model: str = DEFAULT_MODEL, *,
             max_output_tokens=max_tokens,
         )
         response = gemini.generate_content(prompt, generation_config=config)
-        return response.text.strip()
+        # Safety filter에 의해 blocked된 경우 response.text가 ValueError를 발생시킴
+        if not response.candidates:
+            raise ValueError("Gemini response blocked or empty (no candidates)")
+        try:
+            return response.text.strip()
+        except ValueError:
+            # blocked by safety filters — candidates 존재하나 content 없음
+            block_reason = getattr(response.candidates[0], "finish_reason", "unknown")
+            raise ValueError(f"Gemini response blocked (reason: {block_reason})")
     else:
         client = _get_openai_client()
         response = client.chat.completions.create(
@@ -142,7 +150,10 @@ def call_llm(prompt: str, model: str = DEFAULT_MODEL, *,
             top_p=top_p,
             max_tokens=max_tokens,
         )
-        return response.choices[0].message.content.strip()
+        content = response.choices[0].message.content if response.choices else None
+        if content is None:
+            raise ValueError("OpenAI response returned empty content")
+        return content.strip()
 
 
 def call_llm_json(system_prompt: str, user_prompt: str, model: str = DEFAULT_MODEL, *,
@@ -160,6 +171,18 @@ def call_llm_json(system_prompt: str, user_prompt: str, model: str = DEFAULT_MOD
         파싱된 JSON dict
     """
     import json
+    import re
+
+    def _parse_json_safe(text: str) -> dict:
+        """Parse JSON with fallback: strip markdown fences if present."""
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # Try stripping markdown code fences (```json ... ```)
+            m = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+            if m:
+                return json.loads(m.group(1))
+            raise
 
     if _is_gemini(model):
         init_gemini()
@@ -173,7 +196,14 @@ def call_llm_json(system_prompt: str, user_prompt: str, model: str = DEFAULT_MOD
             response_mime_type="application/json",
         )
         response = gemini.generate_content(user_prompt, generation_config=config)
-        return json.loads(response.text)
+        if not response.candidates:
+            raise ValueError("Gemini JSON response blocked or empty (no candidates)")
+        try:
+            raw_text = response.text
+        except ValueError:
+            block_reason = getattr(response.candidates[0], "finish_reason", "unknown")
+            raise ValueError(f"Gemini JSON response blocked (reason: {block_reason})")
+        return _parse_json_safe(raw_text)
     else:
         client = _get_openai_client()
         response = client.chat.completions.create(
@@ -187,7 +217,10 @@ def call_llm_json(system_prompt: str, user_prompt: str, model: str = DEFAULT_MOD
             max_tokens=max_tokens,
             response_format={"type": "json_object"},
         )
-        return json.loads(response.choices[0].message.content)
+        content = response.choices[0].message.content if response.choices else None
+        if content is None:
+            raise ValueError("OpenAI JSON response returned empty content")
+        return _parse_json_safe(content)
 
 
 def question_summary(client, text, model=DEFAULT_MODEL):
