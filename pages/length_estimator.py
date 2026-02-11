@@ -204,6 +204,9 @@ def _render_detail_table(result: SurveyLengthResult, lang: str = "ko"):
     """문항별 상세 테이블."""
     st.subheader("Question Details")
 
+    if not result.question_estimates:
+        st.info("No question estimates available.")
+        return
     max_time = max(e.estimated_seconds for e in result.question_estimates)
     task_labels = COGNITIVE_TASK_LABELS.get(lang, COGNITIVE_TASK_LABELS["en"])
 

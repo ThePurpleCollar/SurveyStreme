@@ -10,6 +10,7 @@ venv/
 credentials.txt
 *.env
 .env.*
+!.env.example
 .streamlit/secrets.toml
 
 # Reference documents (client confidential)

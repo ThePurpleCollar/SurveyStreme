@@ -4,6 +4,7 @@
 대부분 알고리즘(regex) 기반, implicit piping 탐지만 LLM 사용.
 """
 
+import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -11,6 +12,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from models.survey import SurveyQuestion
 from services.llm_client import DEFAULT_MODEL, call_llm_json
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 데이터 구조
@@ -305,8 +308,8 @@ def detect_implicit_piping(
                         context=ref.get("context", ""),
                         severity="info",
                     ))
-        except Exception:
-            pass  # LLM 실패 시 무시 — 알고리즘 결과만 사용
+        except Exception as e:
+            logger.warning(f"Implicit piping batch {batch_num} failed: {e}")
 
         if progress_callback:
             progress_callback("batch_done", {

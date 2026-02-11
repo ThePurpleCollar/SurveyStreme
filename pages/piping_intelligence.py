@@ -85,7 +85,7 @@ def page_piping_intelligence() -> None:
                 elif event == "batch_done":
                     total = data["total_batches"]
                     idx = data["batch_index"]
-                    p = 0.3 + ((idx + 1) / total) * 0.5
+                    p = 0.3 + ((idx + 1) / max(total, 1)) * 0.5
                     progress_bar.progress(min(p, 0.8))
 
             result = analyze_piping(
