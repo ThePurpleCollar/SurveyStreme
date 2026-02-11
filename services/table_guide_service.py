@@ -25,44 +25,78 @@ from services.llm_client import (
 logger = logging.getLogger(__name__)
 
 
+def _extract_json_from_text(text: str) -> dict:
+    """텍스트에서 JSON 객체를 추출.
+
+    마크다운 코드 펜스, 설명 텍스트, 후행 텍스트 등을 제거하고
+    첫 번째 `{` ~ 마지막 `}`를 JSON으로 파싱.
+    """
+    import json as _json
+
+    cleaned = text.strip()
+
+    # 1) 마크다운 코드 펜스 제거
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        lines = lines[1:]  # opening fence
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+
+    # 2) 직접 파싱 시도
+    try:
+        return _json.loads(cleaned)
+    except (ValueError, _json.JSONDecodeError):
+        pass
+
+    # 3) 첫 `{` ~ 마지막 `}` 추출
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        candidate = cleaned[first_brace:last_brace + 1]
+        return _json.loads(candidate)
+
+    raise ValueError(f"No JSON object found in text (length={len(text)})")
+
+
 def _call_llm_json_with_fallback(system_prompt: str, user_prompt: str,
                                   model: str, **kwargs) -> dict:
-    """call_llm_json + text-mode 폴백.
+    """call_llm_json + text-mode 폴백 (2회 재시도).
 
     일부 모델/프록시에서 response_format=json_object가 빈 응답을 반환하는 경우
     call_llm(text mode)로 재시도 후 JSON 파싱.
     """
-    import json as _json
-
+    # 1차: JSON 모드
     try:
         return call_llm_json(system_prompt, user_prompt, model, **kwargs)
     except Exception as e:
         logger.warning(f"call_llm_json failed ({e}), retrying with text mode...")
 
-    # Text-mode fallback
+    # 2차/3차: 텍스트 모드 (최대 2회)
     full_prompt = (
         f"{system_prompt}\n\n"
         "IMPORTANT: Respond with valid JSON only. No markdown code fences, no explanation.\n\n"
         f"{user_prompt}"
     )
-    raw = call_llm(full_prompt, model, max_tokens=kwargs.get("max_tokens", 8192))
+    max_tokens = kwargs.get("max_tokens", 8192)
 
-    # Strip markdown fences if present
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        lines = lines[1:]  # remove opening fence
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines)
+    last_error = None
+    for attempt in range(2):
+        try:
+            raw = call_llm(full_prompt, model, max_tokens=max_tokens)
+            return _extract_json_from_text(raw)
+        except Exception as e:
+            last_error = e
+            if attempt == 0:
+                logger.warning(f"Text-mode attempt {attempt + 1} failed ({e}), retrying...")
 
-    return _json.loads(text)
+    raise last_error
 
 # ── 모델 할당 ────────────────────────────────────────────────────
 MODEL_INTELLIGENCE = MODEL_TITLE_GENERATOR          # GPT-5 — 깊은 이해력 필요
 MODEL_BASE_GENERATOR = DEFAULT_MODEL               # GPT-4.1-mini
 MODEL_NET_GENERATOR = DEFAULT_MODEL                # GPT-4.1-mini
-MODEL_BANNER_SUGGESTER = DEFAULT_MODEL             # GPT-4.1-mini
+MODEL_BANNER_SUGGESTER = MODEL_TITLE_GENERATOR     # GPT-5 — 전문가 수준 배너 설계
 MODEL_SUBBANNER_SUGGESTER = DEFAULT_MODEL          # GPT-4.1-mini
 MODEL_SPECIAL_INSTRUCTIONS = DEFAULT_MODEL         # GPT-4.1-mini
 
@@ -556,6 +590,18 @@ _ANALYSIS_PLAN_SYSTEM_PROMPT = """You are a research director at a top-tier mark
 ## Your Mindset
 You are NOT listing questions that could become banners. You are designing the **analytical lenses** through which the client's brand team will read every table in the report. Each lens must answer a specific strategic question. The output of this step directly determines the quality of the entire Table Guide.
 
+## Banner Convention in Marketing Research
+In professional cross-tabulation, banners are organized as multi-dimensional column headers grouped into **3-5 banner groups** (Banner A, B, C, D…). Each group covers a distinct analytical theme derived from the study's objectives and questionnaire structure.
+
+**You must determine the banner groups yourself** by analyzing the research objectives, the industry/category, and the specific questions in the questionnaire. Do NOT use generic predefined categories. Instead, think as both a **marketing research expert** and a **domain specialist for the industry being studied** (e.g., automotive, FMCG, healthcare, finance, technology).
+
+For example:
+- An automotive brand tracking study might produce: "Demographics", "Vehicle Ownership Profile", "Brand Relationship & Funnel", "Purchase Journey & Intent"
+- A healthcare patient satisfaction study might produce: "Patient Demographics", "Treatment & Care Experience", "Provider Trust & Loyalty", "Composite Health Segments"
+- An FMCG U&A study might produce: "Shopper Profile", "Category Usage & Habits", "Brand Repertoire & Switching", "Attitudinal Segments"
+
+**Key principle**: Demographics alone are NEVER sufficient. Any question — whether it measures attitudes, behaviors, ownership, satisfaction, or intent — can be a banner dimension if it helps explain variance in the study's core metrics. Think about which respondent characteristics would produce the most meaningful differences when cross-tabulated against other questions.
+
 ## Your CoT Process (follow these steps exactly)
 
 ### Step 1: Study Comprehension
@@ -568,34 +614,37 @@ You are NOT listing questions that could become banners. You are designing the *
 Based on Step 1, determine what analytical lenses (categories) are needed.
 Each perspective must answer a specific strategic question for the client.
 
+**Derive your categories from the questionnaire and research objectives.** Each category should represent a distinct analytical lens that a research director would present to the client as a reason to look at the data differently.
+
 Guidelines:
-- Minimum 3, maximum 7 perspectives
+- Minimum 4, maximum 7 perspectives (categories)
 - Each perspective must have 2-5 banner dimensions
 - At least 30% of total dimensions must be composite (combining 2+ questions)
 - Every perspective must pass the "So What?" test — if removed, would the client miss critical insight?
+- **Demographic-only dimensions should be ≤ 30% of total dimensions** — the majority should come from questions measuring behavior, attitudes, experience, or strategic segments
+- Categories must reflect the study's **industry context and research objectives**, not generic textbook labels
 
 ### Step 3: Dimension Specification
 For each perspective, define concrete dimensions with:
 - Candidate questions (exact question numbers)
-- Grouping strategy (exact codes)
+- Grouping strategy (exact codes — be specific, not vague)
 - Whether it's composite or simple
+- Each dimension should have **3-6 meaningful breakpoints** (not just binary splits)
 
-## Common Perspectives (for reference, NOT mandatory)
-Below are examples commonly found in different study types. Use as inspiration, not as a checklist.
-- **Demographics**: Gender, Age, Region (almost always needed, but keep minimal)
-- **Brand Funnel**: Awareness → Consideration → Usage → Loyalty (for brand studies)
-- **Behavioral Segments**: Usage intensity, Purchase recency, Channel preference
-- **Attitudinal Segments**: Satisfaction tiers, NPS groups, Intent levels
-- **Product/Market Specific**: Vehicle type, Engine preference, Price segment, etc.
-- **Media/Touchpoint**: Information sources, Channel exposure (for ad/media studies)
-- **Decision Journey**: Pre-purchase → Purchase → Post-purchase (for path-to-purchase)
+## How to Think About Category Design
+Ask yourself these questions for each potential category:
+1. **What respondent characteristic** does this capture? (who they are, what they do, what they think, how they relate to the brand)
+2. **What strategic question** does cross-tabulating by this category answer?
+3. **Would the client pay for a separate analysis** using this lens? If yes, it's a valid category.
 
-Different study types prioritize differently:
-- Brand Tracking → Brand Funnel + Competitive + Attitudinal
-- U&A → Behavioral + Usage + Demographics
-- Satisfaction/NPS → Attitudinal + Service Journey + Demographics
-- Ad/Creative Test → Exposure + Recall + Attitudinal
-- Concept Test → Interest Segments + Behavioral + Need States
+Consider ALL question types as potential banner sources:
+- **Profiling questions** (demographics, firmographics) — baseline segmentation
+- **Behavioral questions** (usage, purchase, channel, frequency) — what respondents DO
+- **Attitudinal questions** (satisfaction, intent, preference, NPS, agreement scales) — what respondents THINK
+- **Experiential questions** (touchpoints, journey stages, service interactions) — what respondents EXPERIENCE
+- **Composite segments** (combining 2-4 questions) — strategic groups that don't exist in any single question
+
+The specific categories you create should be **tailored to the industry and study objectives**. A luxury brand tracker needs different lenses than a healthcare patient survey or a B2B SaaS satisfaction study. Use your knowledge of the specific industry to identify the most insightful analytical dimensions.
 
 ## Rules for Dimension Design
 1. **At least 30% of dimensions MUST be composite** (is_composite: true) — combining 2+ questions
@@ -603,6 +652,8 @@ Different study types prioritize differently:
 3. **Every dimension must answer a strategic question** — "So what?" test
 4. **EXCLUDE**: OE questions, screening termination questions, country/market filters
 5. **Think in terms of SEGMENTS, not questions**: "High-Intent EV Switchers" not "Q15 responses"
+6. **Each dimension should produce 3-6 breakpoints**, not binary splits. Binary splits (Yes/No) are acceptable only for naturally binary questions (e.g., Gender)
+7. **Attitudinal/behavioral questions are prime banner candidates** when their responses help explain variance in other study questions
 
 ## JSON Output Format
 {
@@ -665,16 +716,18 @@ def _create_analysis_plan(questions: List[SurveyQuestion],
                     lines.append(f"  Variables: {', '.join(pts)}")
             lines.append("")
 
+    # Step 1은 전략적 분석 단계 — 상세 보기 코드 불필요 (Step 2에서 사용)
+    # 옵션 제외로 프롬프트 크기 ~50% 감소 → GPT-5 빈 응답 문제 방지
     lines.append(f"## Complete Question List ({len(questions)} questions, language: {language})")
     lines.append("")
-    lines.append(_format_questions_compact(questions, include_options=True))
+    lines.append(_format_questions_compact(questions, include_options=False))
 
     user_prompt = "\n".join(lines)
 
     try:
         result = _call_llm_json_with_fallback(
             _ANALYSIS_PLAN_SYSTEM_PROMPT, user_prompt,
-            MODEL_INTELLIGENCE, temperature=0.3, max_tokens=8192,
+            MODEL_INTELLIGENCE, temperature=0.3, max_tokens=16384,
         )
         result.setdefault("analysis_strategy", "")
         result.setdefault("categories", [])
@@ -727,6 +780,13 @@ _BANNER_DESIGN_SYSTEM_PROMPT = """You are the head of DP at a top-tier research 
 ## Your Task
 Convert EVERY dimension from the analysis plan into production-ready banner specifications with exact conditions. The quality of the final report depends entirely on the precision of your banner definitions.
 
+## Professional Banner Structure
+In marketing research, banners are organized into thematic groups (Banner A, B, C, D…). The categories from the analysis plan define these groups. Each group should contain 2-6 banners covering a distinct analytical perspective.
+
+**The categories were determined by the analysis plan** based on the study's research objectives and industry context. Your job is to implement EVERY dimension from the plan as a production-ready banner specification. Do NOT add generic categories — faithfully implement the plan's categories.
+
+Banner dimensions can come from ANY question type — profiling, behavioral, attitudinal, experiential, or composite combinations. The key criterion is whether cross-tabulating by that dimension reveals actionable insights for the client's business decisions.
+
 ## Quality Standard
 Each banner must pass the "VP of Insights" test: if a VP sees this banner in a cross-tab, they should immediately understand what segment they're looking at and why it matters for the brand strategy.
 
@@ -742,30 +802,43 @@ Each banner must pass the "VP of Insights" test: if a VP sees this banner in a c
 
 ### Simple Banners (single question)
 - **Demographics**: Gender (Male/Female), Age (3-4 bands), Region (2-4 clusters)
-- **Behavioral**: Group codes into NET segments — never list individual codes as banner values
-- **Scales**: Top2 / Mid / Bot2 (never individual scale points)
+- **Behavioral**: Group codes into NET segments — never list individual codes as banner values. E.g., Usage frequency: Heavy (daily+weekly) / Medium (monthly) / Light (less than monthly)
+- **Attitudinal**: Satisfaction or intent scales → Top2 / Mid / Bot2 or Top2 / Bot3 depending on scale length
+- **Ownership/Brand**: Group by strategic segments — Client Brand / Key Competitors / Other / Non-Owner
 
 ### Composite Banners (multiple questions combined with "&")
 These are the MOST VALUABLE banners. They create strategic segments that don't exist in any single question.
-Examples:
-- **Brand Funnel**: Combine awareness + consideration + ownership questions
+
+**2-question composites:**
+- **Brand Loyalty**: ownership × repurchase intent
   - "Loyal Owner" = `SQ10=1&SQ17=1` (owns client brand AND intends to repurchase)
   - "At-Risk Owner" = `SQ10=1&SQ17=2,3,4,5` (owns but considering switch)
   - "Conquest Target" = `SQ10=2,3,4&D4=1` (owns competitor but considers client)
-- **Engaged Intender**: Combine purchase intent + information seeking
-  - "Active Researcher" = `SQ11=1,2&TP1=1,2,3` (high intent AND seeking info)
-  - "Passive Intender" = `SQ11=1,2&TP1=98,99` (high intent but NOT actively looking)
+
+**3-question composites (higher analytical value):**
+- **Brand Funnel Stage**: awareness × consideration × ownership
+  - "Loyal Advocate" = `A3=1&D4=1&SQ10=1` (aware + considers + owns client brand)
+  - "Aware Non-Considerer" = `A3=1&D4=2,3,4,5&SQ10=2,3,4` (aware but doesn't consider)
+  - "Unaware" = `A3=2,3,4,5` (not aware of client brand)
+- **Engaged Satisfaction**: satisfaction × NPS × usage frequency
+  - "Promoter Power User" = `Q15=1,2&Q16=9,10&Q8=1,2` (satisfied + promoter + heavy user)
+  - "Detractor at Risk" = `Q15=4,5&Q16=0,1,2,3,4,5,6&Q8=1,2` (dissatisfied + detractor + still using)
+  - "Passive Drifter" = `Q15=3&Q16=7,8&Q8=3,4,5` (neutral + passive + light user)
 
 ### Value Label Guidelines
 - Labels must be short (2-4 words), descriptive, and meaningful
 - BAD: "Code 1-3", "Q5=1,2", "Group A"
 - GOOD: "Loyal Owner", "Active Researcher", "Price-Sensitive", "EV Considerer"
+- Each banner should have **3-6 values**. Avoid 2-value binary splits unless the question is naturally binary (e.g., Gender). Scales should typically have 3 values (Top2/Mid/Bot2).
 
 ## Output Requirements
 - **Minimum 12 banners** across all categories
 - **At least 4 composite banners** (banner_type: "composite")
+- **At least 2 composite banners must combine 3+ questions**
 - **category field MUST match** the analysis plan's category_name exactly
 - Every category must have at least 2 banners
+- **Pure demographic dimensions should be ≤ 30% of total banners**
+- **Average values per banner should be ≥ 3** across the full set
 - Do NOT skip any dimension from the analysis plan
 
 ## JSON Output Format
@@ -779,24 +852,29 @@ Examples:
       "source_questions": ["A3", "D4", "SQ10"],
       "values": [
         {
-          "label": "Loyal Owner",
-          "condition": "SQ10=1&SQ17=1",
-          "reasoning": "Owns client brand AND intends to repurchase — core loyal base"
+          "label": "Loyal Advocate",
+          "condition": "A3=1&D4=1&SQ10=1",
+          "reasoning": "Aware + considers + owns client brand — core loyal base"
         },
         {
           "label": "At-Risk Owner",
-          "condition": "SQ10=1&SQ17=2,3,4,5",
-          "reasoning": "Owns client brand but considering competitors — retention priority"
+          "condition": "SQ10=1&D4=2,3,4,5",
+          "reasoning": "Owns client brand but not considering repurchase — retention priority"
         },
         {
           "label": "Conquest Target",
-          "condition": "SQ10=2,3,4&D4=1",
-          "reasoning": "Competitor owner who considers client brand — acquisition opportunity"
+          "condition": "A3=1&D4=1&SQ10=2,3,4",
+          "reasoning": "Aware + considers client but owns competitor — acquisition opportunity"
         },
         {
-          "label": "Non-Considerer",
-          "condition": "SQ10=2,3,4&D4=2,3,4,5",
-          "reasoning": "Competitor owner not considering client — awareness/image gap"
+          "label": "Aware Non-Considerer",
+          "condition": "A3=1&D4=2,3,4,5&SQ10=2,3,4",
+          "reasoning": "Aware but not considering client — image/positioning gap"
+        },
+        {
+          "label": "Unaware",
+          "condition": "A3=2,3,4,5",
+          "reasoning": "Not aware of client brand — awareness-building target"
         }
       ]
     }
@@ -1011,56 +1089,67 @@ def _validate_banners(banner_spec: dict,
 
 # ── Legacy Banner Prompt (폴백용) ────────────────────────────────────
 
-_BANNER_SYSTEM_PROMPT = """You are a senior DP specialist designing cross-tabulation banners for marketing research.
+_BANNER_SYSTEM_PROMPT = """You are a senior DP specialist and industry domain expert designing cross-tabulation banners for marketing research.
+
+## Your Approach
+Analyze the questionnaire and research context to determine the most insightful banner categories for this specific study. Think as both a **marketing research expert** and a **domain specialist for the industry being studied**.
+
+Banner categories should be derived from the study's objectives and question content — NOT from generic templates. Any question type (profiling, behavioral, attitudinal, experiential) can become a banner dimension if cross-tabulating by it reveals actionable insights.
+
+Demographics alone are NEVER sufficient. The majority of banners should come from questions that measure behavior, attitudes, experience, or strategic segments.
 
 ## Critical Constraints
-1. **Generate 3-6 banners MAXIMUM**. Each banner should represent a distinct analytical dimension. Combine related variables into one banner rather than creating many small ones.
-2. **Each banner should have 2-6 values**. If a question has many codes, you MUST group them into meaningful NET categories (e.g., group age ranges into 3-4 bands, group brands into "Korean Brands" vs "Imported Brands", group scales into Top2/Bot2).
+1. **Generate 8-15 banners** grouped into at least 3 thematic categories that you determine from the questionnaire.
+2. **Each banner should have 3-6 values**. Group codes into meaningful NET categories. Avoid binary splits unless naturally binary (e.g., Gender).
 3. **Every banner value MUST have an explicit condition** using "QN=code" format.
-4. **Multi-question combinations**: Use "&" to combine questions when it creates an analytically meaningful segment (e.g., "Q3=1&Q5=1"). This is powerful — use it when a combined segment provides more insight than individual questions alone.
+4. **At least 2 composite banners** combining 2+ questions with "&".
+5. **Pure demographic dimensions should be ≤ 30%** of total banners.
 
 ## What to EXCLUDE
-- **Screening/filter questions** used to terminate respondents (e.g., industry screeners) — these are NOT segmentation variables
-- **Country/market-specific questions** (filter references country, market, or specific geography) — not suitable for total/integrated banners
-- **Low-value or redundant dimensions** — if a variable doesn't reveal meaningful differences in the main study questions, don't include it
+- **Screening/filter questions** used to terminate respondents
+- **Country/market-specific questions** (filter references geography)
+- **Open-ended questions** — text responses cannot be cross-tabulated
 
 ## How to Group Banner Values (NET logic)
-- **Scales/ratings**: Always use Top2 (top 2 codes) / Mid / Bot2 (bottom 2 codes), NOT individual codes
-- **Age**: Group into 3-4 meaningful bands (e.g., 18-29, 30-44, 45+), NOT individual year ranges
-- **Regions**: Group into 2-4 major geographic clusters, NOT individual cities/provinces
-- **Brands**: Group by strategic segments (e.g., "Client Brand" vs "Domestic Competitors" vs "Imported Brands" vs "Non-Owner"), NOT individual brands. Only list individual brands if the study is specifically about that brand vs 1-2 key competitors.
-- **Purchase timing**: Group into "Recent" vs "Older" or similar 2-3 groups
-- **Behavioral variables**: Create binary or 3-way splits that tell a clear analytical story (e.g., "Owner" vs "Non-Owner", "High Intent" vs "Low Intent")
+- **Scales/ratings**: Top2 / Mid / Bot2 (3-way split), NOT individual codes
+- **Age**: 3-4 meaningful bands (e.g., 18-29, 30-44, 45+)
+- **Regions**: 2-4 major geographic clusters
+- **Brands**: Strategic segments (Client Brand / Key Competitors / Others / Non-Owner)
+- **Behavioral**: 3-way splits (Heavy/Medium/Light, Recent/Occasional/Lapsed)
+- **Attitudinal**: 3-way splits (Promoter/Passive/Detractor, Satisfied/Neutral/Dissatisfied)
+
+## Condition Format Rules
+- Single code: "SQ1=1"
+- Multiple codes (OR): "SQ1=1,2,3"
+- Combined questions (AND): "Q3=1&Q5=1"
+- **NEVER** use negative conditions ("!=", "NOT", "≠")
+- Values within a banner must be **mutually exclusive**
 
 ## JSON Output Format
 {
   "banners": [
     {
+      "category": "Thematic group name you determined (e.g., Demographics, Ownership & Journey, Attitudes, etc.)",
       "name": "Banner name (the analytical dimension)",
-      "rationale": "1-2 sentence explanation of WHY this banner is analytically valuable — what insight does it reveal when cross-tabulated?",
+      "rationale": "1-2 sentence explanation of WHY this banner is analytically valuable",
       "source_questions": ["SQ1"],
       "values": [
         {"label": "Value label (short)", "condition": "SQ1=1"},
-        {"label": "Value label (short)", "condition": "SQ1=2"}
+        {"label": "Value label (short)", "condition": "SQ1=2,3"}
       ]
     }
   ]
 }
 
-## Condition Format Rules
-- Single code: "SQ1=1"
-- Multiple codes (OR within one question): "SQ1=1,2,3"
-- Combined questions (AND across questions): "Q3=1&Q5=1"
-- Always use exact question numbers and answer codes from the questionnaire
-- **NEVER use negative conditions** like "!=", "NOT", or "≠". Only use positive "=" conditions. If a question already has a filter (only asked to a subset), you don't need to re-state the filter — just use that question's codes directly (e.g., if SQ6 is only asked when SQ5≠99, use "SQ6=1,2,3" without adding "&SQ5!=99").
-- **Each banner value must be mutually exclusive and clearly defined**. Do NOT create catch-all values like "Multiple answers" or "All of the above".
+**IMPORTANT**: Every banner MUST have a `category` field. Group banners into 3-5 thematic categories that you determine from the questionnaire content. Use descriptive category names specific to this study (e.g., "Vehicle Ownership & Journey", "EV Attitudes & Readiness", "Brand Relationship").
 
 ## Example: Good Banner Design for a Brand Tracking Study
 {
   "banners": [
     {
+      "category": "Demographics",
       "name": "Gender",
-      "rationale": "Standard demographic cut to identify gender-based differences in brand awareness and preference.",
+      "rationale": "Standard demographic cut to identify gender-based differences in brand metrics.",
       "source_questions": ["SQ1"],
       "values": [
         {"label": "Male", "condition": "SQ1=1"},
@@ -1068,8 +1157,9 @@ _BANNER_SYSTEM_PROMPT = """You are a senior DP specialist designing cross-tabula
       ]
     },
     {
+      "category": "Demographics",
       "name": "Age Group",
-      "rationale": "Generational segmentation reveals different brand consideration sets and media consumption patterns.",
+      "rationale": "Generational segmentation reveals different brand consideration sets.",
       "source_questions": ["SQ2"],
       "values": [
         {"label": "18-29", "condition": "SQ2=1,2"},
@@ -1078,23 +1168,50 @@ _BANNER_SYSTEM_PROMPT = """You are a senior DP specialist designing cross-tabula
       ]
     },
     {
+      "category": "Ownership & Usage",
       "name": "Ownership Segment",
-      "rationale": "Comparing client brand owners vs competitors reveals satisfaction drivers and switching barriers critical for retention strategy.",
+      "rationale": "Client brand owners vs competitors reveals satisfaction drivers and switching barriers.",
       "source_questions": ["SQ5", "SQ6"],
       "values": [
         {"label": "Client Brand Owner", "condition": "SQ6=1"},
-        {"label": "Domestic Competitor Owner", "condition": "SQ6=2,3"},
-        {"label": "Import Brand Owner", "condition": "SQ6=4,5,6,7,8"},
+        {"label": "Domestic Competitor", "condition": "SQ6=2,3"},
+        {"label": "Import Brand", "condition": "SQ6=4,5,6,7,8"},
         {"label": "Non-Owner", "condition": "SQ5=99"}
       ]
     },
     {
+      "category": "Attitudes & Evaluation",
+      "name": "Overall Satisfaction",
+      "rationale": "Satisfaction tiers reveal which segments need retention vs growth strategies.",
+      "source_questions": ["Q15"],
+      "values": [
+        {"label": "Satisfied (Top2)", "condition": "Q15=1,2"},
+        {"label": "Neutral", "condition": "Q15=3"},
+        {"label": "Dissatisfied (Bot2)", "condition": "Q15=4,5"}
+      ]
+    },
+    {
+      "category": "Attitudes & Evaluation",
       "name": "Purchase Intent",
-      "rationale": "Separating high vs low intent groups helps prioritize acquisition targets and tailor messaging.",
+      "rationale": "Intent levels help prioritize acquisition targets and messaging.",
       "source_questions": ["SQ11"],
       "values": [
         {"label": "High Intent (Top2)", "condition": "SQ11=1,2"},
+        {"label": "Medium", "condition": "SQ11=3"},
         {"label": "Low Intent (Bot2)", "condition": "SQ11=4,5"}
+      ]
+    },
+    {
+      "category": "Composite Segments",
+      "name": "Brand Loyalty Segment",
+      "rationale": "Combining ownership and intent reveals retention vs conquest priorities.",
+      "banner_type": "composite",
+      "source_questions": ["SQ6", "SQ11"],
+      "values": [
+        {"label": "Loyal Owner", "condition": "SQ6=1&SQ11=1,2"},
+        {"label": "At-Risk Owner", "condition": "SQ6=1&SQ11=3,4,5"},
+        {"label": "Conquest Target", "condition": "SQ6=2,3,4,5,6,7,8&SQ11=1,2"},
+        {"label": "Low Potential", "condition": "SQ6=2,3,4,5,6,7,8&SQ11=3,4,5"}
       ]
     }
   ]
@@ -1169,45 +1286,105 @@ def _infer_banner_category(banner_name: str) -> str:
     """배너 이름에서 카테고리를 추정 (category 필드가 없는 경우 폴백).
 
     매칭 순서가 중요: 더 구체적인 키워드를 먼저 검사.
+    범용적으로 다양한 산업·도메인에 대응하도록 넓은 키워드를 포함.
     """
     name_lower = banner_name.lower()
 
-    # EV/Powertrain (engine, ev 등 — demographics의 "age"보다 먼저 검사)
-    ev_kw = [" ev ", "ev ", " ev", "electric", "전기차", "hybrid", "하이브리드",
-             "engine type", "엔진 유형", "powertrain"]
-    if any(kw in f" {name_lower} " or name_lower.startswith(kw.strip())
-           for kw in ev_kw):
-        return "EV & Powertrain"
+    # 매칭 규칙: (키워드 리스트, 카테고리명) — 순서대로 첫 매칭 반환.
+    # 더 구체적인(multi-word) 패턴을 먼저 배치하여 오분류 방지.
+    _CATEGORY_RULES = [
+        # ── 1. Technology & Innovation (EV, AI, robotics, hydrogen 등) ──
+        ([" ev ", "ev ", " ev", "electric", "전기차", "hybrid", "하이브리드",
+          "engine type", "엔진 유형", "powertrain", "hydrogen", "수소",
+          "autonomous", "자율주행", "robotaxi", "robot", "로봇",
+          "ai ", " ai", "artificial intelligence", "인공지능",
+          "iot", "smart home", "스마트홈", "connected", "커넥티드",
+          "mobility", "모빌리티", "drone", "드론", "technology", "기술"],
+         "Technology & Innovation"),
 
-    # Brand/Funnel (brand, funnel, awareness, loyalty)
-    brand_kw = ["brand", "funnel", "awareness", "loyalty", "consideration",
-                "ownership segment", "브랜드", "보유", "인지", "충성"]
-    if any(kw in name_lower for kw in brand_kw):
-        return "Brand & Ownership"
+        # ── 2. Health & Wellness (before Brand — "health awareness" → Health) ──
+        (["health", "건강", "wellness", "웰빙", "fitness", "운동",
+          "nutrition", "영양", "diet", "식이", "medical", "의료",
+          "mental health", "stress", "스트레스", "well-being",
+          "symptom", "증상", "treatment", "치료", "pharmaceutical", "제약"],
+         "Health & Wellness"),
 
-    # Purchase/Usage behavior
-    behav_kw = ["purchase", "intent", "usage", "buying", "구매", "의향",
-                "사용", "이용", "frequency", "빈도"]
-    if any(kw in name_lower for kw in behav_kw):
-        return "Purchase & Usage"
+        # ── 3. Media & Communication (before Purchase — "media consumption" → Media) ──
+        (["media", "미디어", "social media", "sns", "소셜",
+          "advertising", "광고", "digital", "디지털",
+          "tv", "radio", "online", "오프라인", "offline",
+          "content", "콘텐츠", "information source", "정보원",
+          "streaming", "platform", "플랫폼", "influencer"],
+         "Media & Communication"),
 
-    # Satisfaction/Evaluation
-    eval_kw = ["satisfaction", "rating", "nps", "recommend", "만족",
-               "평가", "추천"]
-    if any(kw in name_lower for kw in eval_kw):
-        return "Evaluation"
+        # ── 4. Household & Family ──
+        (["household", "가구", "family", "가족", "children", "자녀",
+          "kids", "아이", "pet", "반려동물", "living arrangement", "거주",
+          "housing", "주거", "home ownership", "주택"],
+         "Household & Family"),
 
-    # Demographics (가장 마지막 — 넓은 매칭)
-    demo_kw = ["gender", "age group", "age band", "region", "city",
-               "income", "education", "occupation", "marital",
-               "성별", "연령", "지역", "소득", "학력", "직업"]
-    if any(kw in name_lower for kw in demo_kw):
-        return "Demographics"
+        # ── 5. Brand & Funnel ──
+        (["brand", "funnel", "awareness", "loyalty", "consideration",
+          "ownership segment", "브랜드", "보유 세그먼트", "인지", "충성",
+          "top of mind", "switching", "전환"],
+         "Brand & Ownership"),
 
-    # Vehicle/Car ownership (brand와 별도)
-    car_kw = ["car ownership", "vehicle", "차량", "자동차", "car type"]
-    if any(kw in name_lower for kw in car_kw):
-        return "Vehicle Ownership"
+        # ── 6. Attitudes & Values ──
+        (["attitude", "perception", "sentiment", "interest", "관심",
+          "opinion", "의견", "belief", "concern",
+          "importance", "중요", "priority", "우선순위",
+          "willingness", "의향", "openness", "readiness",
+          "value", "가치", "lifestyle", "라이프스타일",
+          "culture", "문화", "k-culture", "k-pop", "한류",
+          "mindset", "aspiration", "motivation", "동기",
+          "environmental", "sustainability", "환경", "지속가능",
+          "trust", "신뢰", "confidence", "자신감", "preference", "선호"],
+         "Attitudes & Values"),
+
+        # ── 7. Satisfaction & Evaluation ──
+        (["satisfaction", "satisfied", "rating", "nps", "recommend",
+          "만족", "평가", "추천", "experience", "경험",
+          "expectation", "기대", "performance", "성능",
+          "quality", "품질", "csat", "ces"],
+         "Satisfaction & Evaluation"),
+
+        # ── 8. Purchase & Usage Behavior ──
+        (["purchase", "buying", "구매", "usage", "사용", "이용",
+          "frequency", "빈도", "spending", "지출", "budget", "예산",
+          "channel", "채널", "touchpoint", "접점", "shopping",
+          "subscription", "구독", "adoption", "도입",
+          "engagement", "참여", "activity", "활동",
+          "consumption", "소비", "behavior", "행동",
+          "journey", "여정", "decision", "routine", "습관", "habit"],
+         "Purchase & Usage"),
+
+        # ── 9. Vehicle & Ownership (automotive specific) ──
+        (["car ownership", "vehicle", "차량", "자동차", "car type",
+          "fleet", "mileage", "주행거리", "drivetrain", "sedan",
+          "suv", "truck", "pickup"],
+         "Vehicle Ownership"),
+
+        # ── 10. Demographics (넓은 매칭 — 구체적 카테고리 다 실패 시) ──
+        (["gender", "age group", "age band", "age tier", "generation",
+          "region", "city", "province", "state", "area",
+          "income", "education", "occupation", "marital", "ethnicity",
+          "race", "nationality", "employment", "job", "sector",
+          "성별", "연령", "지역", "소득", "학력", "직업",
+          "세대", "결혼", "인종", "민족", "고용"],
+         "Demographics"),
+
+        # ── 11. Segment & Composite ──
+        (["segment", "세그먼트", "cluster", "클러스터", "typology",
+          "tier", "cohort", "persona",
+          "composite", "combined"],
+         "Segments"),
+    ]
+
+    padded = f" {name_lower} "
+    for keywords, category in _CATEGORY_RULES:
+        for kw in keywords:
+            if kw in name_lower or kw in padded:
+                return category
 
     return ""
 
@@ -1263,18 +1440,13 @@ def _parse_banner_spec_to_models(raw: dict) -> List[Banner]:
 
 def _fallback_heuristic_candidates(questions: List[SurveyQuestion],
                                     intelligence: dict | None) -> List[SurveyQuestion]:
-    """Step 1 실패 시 폴백: 기존 휴리스틱으로 후보 문항 선정."""
-    intel_segment_qns = set()
-    if intelligence:
-        for seg in intelligence.get("key_segments", []):
-            qn = seg.get("question", "").strip()
-            if qn:
-                intel_segment_qns.add(qn.upper())
+    """Step 1 실패 시 폴백: 배너 후보 문항 선정.
 
-    demo_keywords_ko = ["성별", "연령", "지역", "소득", "학력", "직업", "결혼"]
-    demo_keywords_en = ["gender", "age", "region", "income", "education", "occupation", "marital"]
-    demo_keywords = demo_keywords_ko + demo_keywords_en
+    모든 SA/MA 문항 중 OE, 스크리닝 종료, 국가/마켓 필터를 제외한
+    나머지를 후보로 선정. 데모뿐 아니라 behavioral/attitudinal 문항도 포함.
+    """
     country_keywords = ["country", "market", "국가", "마켓", "나라"]
+    oe_keywords = ["oe", "open", "verbatim", "기타 기재", "서술"]
 
     candidates = []
     seen_qn = set()
@@ -1283,24 +1455,33 @@ def _fallback_heuristic_candidates(questions: List[SurveyQuestion],
             continue
         seen_qn.add(q.question_number)
 
+        # 보기가 2개 미만이면 배너 불가
+        if len(q.answer_options) < 2:
+            continue
+
+        # 국가/마켓 필터 문항 제외
         filt_lower = (q.filter_condition or "").lower()
         if any(kw in filt_lower for kw in country_keywords):
             continue
 
-        is_screening = q.question_number.upper().startswith("S")
-        is_demo = any(kw in (q.question_text or "").lower() for kw in demo_keywords)
-        is_intel_segment = q.question_number.upper() in intel_segment_qns
-        has_options = len(q.answer_options) >= 2
+        # OE 문항 제외
+        qtype = (q.question_type or "").lower()
+        qtext = (q.question_text or "").lower()
+        if any(kw in qtype for kw in oe_keywords):
+            continue
 
-        if (is_screening or is_demo or is_intel_segment) and has_options:
-            candidates.append(q)
+        candidates.append(q)
 
     return candidates
 
 
 def _fallback_direct_banner(candidates: List[SurveyQuestion],
-                             survey_context: str) -> List[Banner]:
-    """분석 계획 없이 직접 배너 설계 (폴백 경로)."""
+                             survey_context: str,
+                             language: str = "en") -> List[Banner]:
+    """분석 계획 없이 직접 배너 설계 (폴백 경로).
+
+    GPT-5에 전체 문항을 전달하여 산업/조사목적에 맞는 배너를 직접 설계.
+    """
     if not candidates:
         return []
 
@@ -1308,15 +1489,13 @@ def _fallback_direct_banner(candidates: List[SurveyQuestion],
     if survey_context:
         lines.append(survey_context)
         lines.append("")
-    lines.append("Design banner specifications from these candidate questions.\n"
-                 "Only generate meaningful banners. Each banner value must have an explicit condition.\n")
-    for q in candidates:
-        lines.append(f"[{q.question_number}] {q.question_text}")
-        lines.append(f"  Type: {q.question_type or 'SA'}")
-        lines.append(f"  Options: {q.answer_options_compact()}")
-        if q.filter_condition:
-            lines.append(f"  Filter: {q.filter_condition}")
-        lines.append("")
+    lines.append(f"Design cross-tabulation banner specifications from the following questionnaire "
+                 f"({len(candidates)} questions, language: {language}).\n"
+                 "Analyze the research objectives and industry context to determine the most "
+                 "insightful banner categories. Select the best banner candidates from ALL "
+                 "question types — profiling, behavioral, attitudinal, and create composite "
+                 "segments where analytically valuable.\n")
+    lines.append(_format_questions_compact(candidates, include_options=True))
 
     user_prompt = "\n".join(lines)
 
@@ -1332,28 +1511,79 @@ def _fallback_direct_banner(candidates: List[SurveyQuestion],
 _MIN_BANNER_COUNT = 8           # 최소 배너 수
 _MIN_COMPOSITE_COUNT = 3        # 최소 composite 배너 수
 _MIN_CATEGORY_COUNT = 3         # 최소 카테고리 수
-_MAX_RETRY = 1                  # 품질 미달 시 재시도 횟수
+_MAX_RETRY = 2                  # 품질 미달 시 재시도 횟수 (총 3회 시도)
+
+
+_DEMO_KW_PATTERN = re.compile(
+    r'\b(?:gender|age\s*(?:group|band)?|region|city|income|education'
+    r'|occupation|marital|household|demographic)'
+    r'|(?:성별|연령|나이|지역|소득|학력|직업|결혼|가구)',
+    re.IGNORECASE,
+)
+
+# _assess_plan_quality에서도 사용 — frozenset 폴백 (카테고리명 전체 매칭용)
+_DEMO_KEYWORDS = frozenset([
+    "demographics", "demographic", "인구통계",
+])
+
+_MIN_AVG_VALUES = 2.8           # 배너당 평균 최소 value 수
+_MAX_DEMO_RATIO = 0.40          # 데모 배너 비율 상한
+
+
+def _is_demo_banner(banner: dict) -> bool:
+    """배너가 인구통계(demographics) 배너인지 판별.
+
+    \b 워드 바운더리로 'age'가 'usage'/'engaged' 등에 오매칭되지 않도록 함.
+    """
+    cat = (banner.get("category", "") or "").lower()
+    name = (banner.get("name", "") or "").lower()
+    text = f"{cat} {name}"
+    return bool(_DEMO_KW_PATTERN.search(text))
 
 
 def _assess_banner_quality(banner_spec: dict) -> dict:
     """배너 스펙의 품질 지표를 평가.
 
     Returns:
-        dict: {total_banners, composite_count, category_count, categories, issues}
+        dict with total_banners, composite_count, category_count, categories,
+        avg_values, demo_ratio, deep_composite_count, total_values, issues, pass.
     """
     banners = banner_spec.get("banners", [])
     total = len(banners)
     composite_count = 0
+    deep_composite_count = 0  # 3+ source questions
     categories = set()
+    total_values = 0
+    demo_count = 0
 
     for b in banners:
         cat = b.get("category", "")
         if cat:
             categories.add(cat)
+        values = b.get("values", [])
+        total_values += len(values)
+
         btype = b.get("banner_type", "simple")
-        has_and = any("&" in v.get("condition", "") for v in b.get("values", []))
+        has_and = any("&" in v.get("condition", "") for v in values)
         if btype == "composite" or has_and:
             composite_count += 1
+            # 3+ source questions 체크
+            src_qs = set(b.get("source_questions", []))
+            # condition에서도 문항 수 추출
+            for v in values:
+                cond = v.get("condition", "")
+                for part in cond.split("&"):
+                    qn = part.split("=")[0].strip()
+                    if qn:
+                        src_qs.add(qn)
+            if len(src_qs) >= 3:
+                deep_composite_count += 1
+
+        if _is_demo_banner(b):
+            demo_count += 1
+
+    avg_values = total_values / total if total > 0 else 0
+    demo_ratio = demo_count / total if total > 0 else 0
 
     issues = []
     if total < _MIN_BANNER_COUNT:
@@ -1362,12 +1592,21 @@ def _assess_banner_quality(banner_spec: dict) -> dict:
         issues.append(f"Only {composite_count} composite banners (minimum: {_MIN_COMPOSITE_COUNT})")
     if len(categories) < _MIN_CATEGORY_COUNT:
         issues.append(f"Only {len(categories)} categories (minimum: {_MIN_CATEGORY_COUNT})")
+    if avg_values < _MIN_AVG_VALUES:
+        issues.append(f"Avg {avg_values:.1f} values/banner (minimum: {_MIN_AVG_VALUES})")
+    if total >= 6 and demo_ratio > _MAX_DEMO_RATIO:
+        issues.append(f"Demographics {demo_count}/{total} ({demo_ratio:.0%}) exceeds {_MAX_DEMO_RATIO:.0%} cap — add behavioral/attitudinal banners")
 
     return {
         "total_banners": total,
         "composite_count": composite_count,
+        "deep_composite_count": deep_composite_count,
         "category_count": len(categories),
         "categories": sorted(categories),
+        "total_values": total_values,
+        "avg_values": round(avg_values, 1),
+        "demo_count": demo_count,
+        "demo_ratio": round(demo_ratio, 2),
         "issues": issues,
         "pass": len(issues) == 0,
     }
@@ -1377,7 +1616,8 @@ def _assess_plan_quality(plan: dict) -> dict:
     """분석 계획의 품질 지표를 평가.
 
     Returns:
-        dict: {total_dims, composite_dims, composite_ratio, category_count, issues, pass}
+        dict with total_dims, composite_dims, composite_ratio, category_count,
+        has_non_demo_category, issues, pass.
     """
     dims = plan.get("banner_dimensions", [])
     total = len(dims)
@@ -1385,6 +1625,19 @@ def _assess_plan_quality(plan: dict) -> dict:
     cat_count = len(cats)
     composite_count = sum(1 for d in dims if d.get("is_composite"))
     composite_ratio = composite_count / total if total > 0 else 0
+
+    # 데모 외 카테고리 존재 여부 (behavioral/attitudinal/composite)
+    has_non_demo_category = False
+    demo_dim_count = 0
+    for cat in cats:
+        cat_name = (cat.get("category_name", "") or "").lower()
+        is_demo_cat = bool(_DEMO_KW_PATTERN.search(cat_name))
+        if not is_demo_cat:
+            has_non_demo_category = True
+        else:
+            demo_dim_count += len(cat.get("banner_dimensions", []))
+
+    demo_dim_ratio = demo_dim_count / total if total > 0 else 0
 
     issues = []
     if total < 8:
@@ -1395,12 +1648,18 @@ def _assess_plan_quality(plan: dict) -> dict:
         issues.append(f"Only {cat_count} categories (minimum: 3)")
     if cat_count > 8:
         issues.append(f"{cat_count} categories exceeds maximum (8)")
+    if not has_non_demo_category:
+        issues.append("All categories are demographics — must include behavioral/attitudinal/composite categories")
+    if total >= 6 and demo_dim_ratio > 0.40:
+        issues.append(f"Demographic dimensions {demo_dim_count}/{total} ({demo_dim_ratio:.0%}) — add behavioral/attitudinal dimensions")
 
     return {
         "total_dims": total,
         "composite_dims": composite_count,
         "composite_ratio": composite_ratio,
         "category_count": cat_count,
+        "has_non_demo_category": has_non_demo_category,
+        "demo_dim_ratio": round(demo_dim_ratio, 2),
         "issues": issues,
         "pass": len(issues) == 0,
     }
@@ -1440,7 +1699,7 @@ def suggest_banner_points(questions: List[SurveyQuestion],
             candidates = _fallback_heuristic_candidates(questions, intelligence)
             if not candidates:
                 return [], None
-            banners = _fallback_direct_banner(candidates, survey_context)
+            banners = _fallback_direct_banner(candidates, survey_context, language)
             return banners, None
 
         plan_quality = _assess_plan_quality(analysis_plan)
@@ -1469,8 +1728,11 @@ def suggest_banner_points(questions: List[SurveyQuestion],
         banner_quality = _assess_banner_quality(banner_spec)
         if banner_quality["pass"]:
             logger.info(f"Step 2 quality OK: {banner_quality['total_banners']} banners, "
-                        f"{banner_quality['composite_count']} composite, "
-                        f"{banner_quality['category_count']} categories")
+                        f"{banner_quality['composite_count']} composite "
+                        f"({banner_quality['deep_composite_count']} deep), "
+                        f"{banner_quality['category_count']} categories, "
+                        f"avg {banner_quality['avg_values']} values/banner, "
+                        f"demo {banner_quality['demo_ratio']:.0%}")
             break
 
         if attempt < _MAX_RETRY:
@@ -1509,8 +1771,11 @@ def suggest_banner_points(questions: List[SurveyQuestion],
     # ── Final quality log ──
     composite_final = sum(1 for b in banners if b.banner_type == "composite")
     cat_final = len(set(b.category for b in banners if b.category))
+    total_pts = sum(len(b.points) for b in banners)
+    avg_pts = total_pts / len(banners) if banners else 0
     logger.info(f"Banner pipeline complete: {len(banners)} banners "
-                f"({composite_final} composite, {cat_final} categories)")
+                f"({composite_final} composite, {cat_final} categories, "
+                f"{total_pts} total values, avg {avg_pts:.1f}/banner)")
     return banners, analysis_plan
 
 

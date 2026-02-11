@@ -18,7 +18,7 @@
 
 ## Phase 3 — UX 개선
 
-- [ ] **TASK-08**: 세션 덮어쓰기 경고 다이얼로그
+- [x] **TASK-08**: 세션 덮어쓰기 경고 다이얼로그
 - [ ] **TASK-09**: Table Guide 탭 진행 상태 표시
 - [ ] **TASK-10**: LLM 호출 자동 재시도 (exponential backoff)
 

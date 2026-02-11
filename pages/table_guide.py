@@ -1413,7 +1413,17 @@ def _run_generate_all(df: pd.DataFrame, language: str):
             _, banner_result, _ = results["banner"]
             suggested, plan = banner_result
             if suggested and doc:
-                doc.banners = suggested
+                # 기존 배너가 더 풍부하면 fallback 결과로 덮어쓰지 않음
+                existing = doc.banners or []
+                existing_pts = sum(len(b.points) for b in existing)
+                new_pts = sum(len(b.points) for b in suggested)
+                if existing_pts > 0 and new_pts < existing_pts and len(suggested) < len(existing):
+                    logger.warning(
+                        f"Keeping existing banners ({len(existing)} banners, {existing_pts} pts) "
+                        f"over new result ({len(suggested)} banners, {new_pts} pts)"
+                    )
+                else:
+                    doc.banners = suggested
             if plan:
                 st.session_state["banner_analysis_plan"] = plan
             st.session_state["banners_suggested"] = True

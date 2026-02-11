@@ -50,6 +50,22 @@ def _show_user_guide():
     page_user_reference()
 
 
+@st.dialog("⚠️ Overwrite Session?", width="small")
+def _confirm_overwrite(filename: str, question_count: int):
+    st.warning(
+        f"Current session **{filename}** ({question_count} questions) "
+        "will be replaced. Unsaved changes will be lost."
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Cancel", use_container_width=True):
+            st.rerun()
+    with col2:
+        if st.button("Continue", type="primary", use_container_width=True):
+            st.session_state['_overwrite_confirmed'] = True
+            st.rerun()
+
+
 # --- 네비게이션 상수 ---
 # 그룹 1: 문항 추출
 # 그룹 2: Table Guide (단독)
@@ -100,25 +116,35 @@ with st.sidebar:
     )
 
     if raw_upload is not None:
+        # ── 세션 덮어쓰기 확인 ──
+        _new_upload_key = f"{raw_upload.name}_{raw_upload.size}"
+        _has_existing = 'survey_document' in st.session_state
+        _is_same_file = (st.session_state.get('_loaded_session_key') == _new_upload_key)
+
+        if _has_existing and not _is_same_file and not st.session_state.pop('_overwrite_confirmed', False):
+            doc = st.session_state['survey_document']
+            _confirm_overwrite(doc.filename, len(doc.questions))
+            st.stop()
+
         ext = os.path.splitext(raw_upload.name)[1].lower()
 
         if ext == '.json':
             # ── JSON → 세션 복원 (최초 1회만) ──
-            _load_key = f"{raw_upload.name}_{raw_upload.size}"
-            if st.session_state.get('_loaded_session_key') != _load_key:
+            if st.session_state.get('_loaded_session_key') != _new_upload_key:
                 try:
                     data = json.loads(raw_upload.getvalue().decode("utf-8"))
                     doc = SurveyDocument.from_json_dict(data)
                     st.session_state['survey_document'] = doc
                     st.session_state['edited_df'] = doc.to_dataframe()
                     st.session_state['uploaded_file_name'] = os.path.splitext(doc.filename)[0]
-                    st.session_state['_loaded_session_key'] = _load_key
+                    st.session_state['_loaded_session_key'] = _new_upload_key
                 except Exception as e:
                     st.error(f"Failed to load session: {e}")
         else:
             # ── PDF/DOCX → 설문지 업로드 ──
             uploaded_file = raw_upload
             st.session_state['uploaded_file_name'] = os.path.splitext(raw_upload.name)[0]
+            st.session_state['_loaded_session_key'] = _new_upload_key
             output_folder = 'output'
             if not os.path.exists(output_folder):
                 os.makedirs(output_folder)
