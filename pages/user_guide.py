@@ -34,7 +34,7 @@ def page_user_reference():
         st.markdown("""
         <div style="padding: 15px; border-radius: 10px; background-color: #fafafa; height: 200px; border: 1px solid #b2dfdb;">
             <h4 style="color: #00796b; margin-top: 0;">Table Guide Builder</h4>
-            <p>Questionnaire Analyzer 결과를 기반으로 완전한 Table Guide 문서를 생성합니다. Table Title, Base/Net Recode, Banner, Sort/SubBanner, Special Instructions를 AI + 알고리즘으로 자동 생성하고, 다중시트 Excel로 내보낼 수 있습니다.</p>
+            <p>Questionnaire Analyzer 결과를 기반으로 완전한 Table Guide 문서를 생성합니다. Table Title, Net/Recode, Banner, Sort/SubBanner, Special Instructions를 AI + 알고리즘으로 자동 생성하고, 다중시트 Excel로 내보낼 수 있습니다.</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -298,13 +298,13 @@ Q6_3: 1st+2nd+3rd</pre>
         2.  **Questionnaire Analyzer:**
             - **PDF:** 자동으로 문항 번호, 텍스트, 유형이 패턴 기반으로 추출됩니다.
             - **DOCX:** 'Extract Questions with AI' 버튼을 클릭하면 AI가 자동으로 추출합니다. 문항 번호, 텍스트, 유형뿐만 아니라 보기, 로직, 필터, 지시문까지 추출됩니다.
-            - 결과를 Tree View(계층 구조)와 Spreadsheet(편집 가능 테이블)에서 확인합니다.
+            - 결과를 Spreadsheet(편집 가능 테이블)에서 확인합니다. 상세 카드뷰는 하단 Tree View expander에서 열 수 있습니다.
             - 필요시 테이블 내에서 직접 수정할 수 있습니다.
             - 하단의 `Download CSV` 또는 `Download Excel` 버튼으로 결과를 저장합니다.
             - **Save Session**으로 추출 결과를 저장해두면 나중에 재추출 없이 불러올 수 있습니다.
         3.  **Table Guide Builder:** 6개 탭을 순서대로 진행합니다.
             - **Table Titles**: 언어 선택 → `Generate Titles`로 테이블 제목 생성
-            - **Base & Net/Recode**: `Generate`로 Base 정의 + Net/Recode 제안 생성
+            - **Net/Recode**: `Generate`로 Net/Recode 제안 생성
             - **Banner Setup**: `Auto-Suggest`로 배너 후보 자동 감지, 수동 추가/편집 가능
             - **Sort & SubBanner**: `Auto-Generate`로 정렬 규칙 + SubBanner 자동 생성
             - **Special Instructions**: `Auto-Generate`로 로테이션/파이핑 등 프로그래밍 지시사항 감지

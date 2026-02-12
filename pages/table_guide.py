@@ -1331,17 +1331,15 @@ def _tab_review_export(df: pd.DataFrame, language: str):
     total = stats["total"]
 
     st.subheader("Completeness Checklist")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     with c1:
         st.checkbox(f"Table Titles: {stats['titles']}/{total}", value=stats['titles'] > 0, disabled=True)
-        st.checkbox(f"Base: {stats['bases']}/{total}", value=stats['bases'] > 0, disabled=True)
-    with c2:
         st.checkbox(f"Net/Recode: {stats['nets']}/{total}", value=stats['nets'] > 0, disabled=True)
+    with c2:
         st.checkbox(f"Sort: {stats['sorts']}/{total}", value=stats['sorts'] > 0, disabled=True)
-    with c3:
         st.checkbox(f"Banners: {stats['banners']} defined", value=stats['banners'] > 0, disabled=True)
+    with c3:
         st.checkbox(f"Banner Assigned: {stats['banner_assigned']}/{total}", value=stats['banner_assigned'] > 0, disabled=True)
-    with c4:
         st.checkbox(f"Special Instr: {stats['special_instructions']}/{total}", value=stats['special_instructions'] > 0, disabled=True)
 
     st.divider()
@@ -1614,9 +1612,9 @@ def _run_generate_all(df: pd.DataFrame, language: str):
         stats = _compute_completeness()
         t = stats["total"]
         summary = (
-            f"Titles {stats['titles']}/{t} · Base {stats['bases']}/{t} · "
-            f"Net {stats['nets']}/{t} · Banner {stats['banners']} · "
-            f"Assigned {stats['banner_assigned']}/{t} · Sort {stats['sorts']}/{t}"
+            f"Titles {stats['titles']}/{t} · Net {stats['nets']}/{t} · "
+            f"Banner {stats['banners']} · Assigned {stats['banner_assigned']}/{t} · "
+            f"Sort {stats['sorts']}/{t}"
         )
 
         # Intelligence 소요시간 포함
