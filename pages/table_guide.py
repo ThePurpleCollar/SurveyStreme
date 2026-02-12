@@ -1127,12 +1127,70 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
     if not banners:
         st.info("No banners defined yet. Click **Auto-Suggest Banner Points** or add manually below.")
 
-    # Add Banner 버튼
-    if st.button("Add Banner", key="add_banner_btn"):
-        if doc:
-            next_id = _banner_id_from_index(len(banners))  # A, B, C... AA, AB...
-            doc.banners.append(Banner(banner_id=next_id, name=f"Banner {next_id}", points=[]))
-            st.rerun()
+    # ── Banner Summary 테이블 (체크박스 제거 UI) ──
+    if banners:
+        st.subheader("Banner Summary")
+        summary_data = []
+        for b in banners:
+            summary_data.append({
+                "Include": True,
+                "ID": b.banner_id,
+                "Name": b.name,
+                "Category": b.category or "Other",
+                "Type": b.banner_type or "simple",
+                "Values": len(b.points),
+            })
+
+        edited_summary = st.data_editor(
+            pd.DataFrame(summary_data),
+            column_config={
+                "Include": st.column_config.CheckboxColumn("Include", default=True),
+                "ID": st.column_config.TextColumn("ID", disabled=True, width="small"),
+                "Name": st.column_config.TextColumn("Name", disabled=True),
+                "Category": st.column_config.TextColumn("Category", disabled=True),
+                "Type": st.column_config.TextColumn("Type", disabled=True, width="small"),
+                "Values": st.column_config.NumberColumn("Values", disabled=True, width="small"),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="banner_summary_editor",
+        )
+
+        excluded = [i for i, row in edited_summary.iterrows() if not row["Include"]]
+        btn_col_rm, btn_col_add = st.columns(2)
+        with btn_col_rm:
+            if excluded:
+                if st.button(f"Remove Unchecked ({len(excluded)})", type="primary",
+                             key="remove_unchecked_banners"):
+                    for idx in sorted(excluded, reverse=True):
+                        doc.banners.pop(idx)
+                    st.rerun()
+        with btn_col_add:
+            if st.button("Add New Banner", key="add_banner_btn"):
+                next_id = _banner_id_from_index(len(banners))
+                doc.banners.append(Banner(
+                    banner_id=next_id,
+                    name=f"Banner {next_id}",
+                    points=[BannerPoint(
+                        point_id=f"BP_{next_id}_1",
+                        label="", source_question="", condition="",
+                    )],
+                ))
+                st.rerun()
+    else:
+        # 배너 없을 때도 Add 버튼 제공
+        if st.button("Add New Banner", key="add_banner_btn_empty"):
+            if doc:
+                next_id = _banner_id_from_index(0)
+                doc.banners.append(Banner(
+                    banner_id=next_id,
+                    name=f"Banner {next_id}",
+                    points=[BannerPoint(
+                        point_id=f"BP_{next_id}_1",
+                        label="", source_question="", condition="",
+                    )],
+                ))
+                st.rerun()
 
     # 카테고리별 그룹핑
     from collections import OrderedDict
@@ -1193,12 +1251,11 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
                     },
                 )
 
-                # Apply Edits 버튼
-                btn_col1, btn_col2 = st.columns(2)
+                # Apply Edits / Remove 버튼
+                btn_col1, btn_col2 = st.columns([3, 1])
                 with btn_col1:
                     if st.button("Apply Edits", type="primary",
                                  key=f"apply_bp_{banner.banner_id}"):
-                        import re as _re
                         new_points = []
                         for j, row in edited_bp.iterrows():
                             label = str(row.get("Label", "")).strip()
@@ -1221,7 +1278,7 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
                         st.success(f"Banner {banner.banner_id} updated ({len(new_points)} values)")
                         st.rerun()
                 with btn_col2:
-                    if st.button(f"Remove Banner {banner.banner_id}",
+                    if st.button(f"Remove {banner.banner_id}",
                                  key=f"del_banner_{banner.banner_id}"):
                         doc.banners.pop(b_idx)
                         st.rerun()

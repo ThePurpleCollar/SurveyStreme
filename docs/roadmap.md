@@ -57,3 +57,8 @@
 ## Phase 9 — 감사 & 품질
 
 - [x] **Audit Fix**: inline import 이동, stale state 초기화, 빈 결과 메시지 개선, magic number 상수화
+
+## Phase 10 — 배너 품질 & UX ✅
+
+- [x] **Banner Pipeline Enhancement**: 구조화된 study params, 도메인별 카테고리 힌트/composite 예시, research plan 재시도, composite 품질 스코어링, semantic relevance 기반 배너-문항 할당 정렬
+- [x] **Banner Management UI**: 체크박스 기반 일괄 제거 (Banner Summary 테이블), Add New Banner 강화, 개별 Remove 버튼 우측 정렬

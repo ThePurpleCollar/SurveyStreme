@@ -185,6 +185,254 @@ def _build_code_map(questions: List[SurveyQuestion]) -> dict:
     return code_map
 
 
+# ── Structured Study Parameters (Change 1) ────────────────────────────
+
+def _build_structured_study_params(survey_context: str,
+                                    intelligence: dict | None) -> str:
+    """intelligence에서 핵심 파라미터를 추출하여 구조화된 블록 생성.
+
+    LLM이 freeform markdown에서 파싱하지 않아도 되도록 명시적 블록을 생성.
+    """
+    if not intelligence:
+        return ""
+
+    parts = ["## STUDY PARAMETERS (use these to guide ALL decisions)"]
+    client = intelligence.get("client_name", "")
+    if client:
+        parts.append(f"- **Client/Brand**: {client}")
+    study_type = intelligence.get("study_type", "")
+    if study_type:
+        parts.append(f"- **Study Type**: {study_type}")
+    objectives = intelligence.get("research_objectives", [])
+    if objectives:
+        parts.append("- **Research Objectives**:")
+        for obj in objectives[:5]:
+            parts.append(f"  - {obj}")
+    segments = intelligence.get("key_segments", [])
+    if segments:
+        parts.append("- **Key Segments**:")
+        for seg in segments[:6]:
+            seg_name = seg.get("name", "") if isinstance(seg, dict) else str(seg)
+            seg_q = seg.get("question", "") if isinstance(seg, dict) else ""
+            seg_type = seg.get("type", "") if isinstance(seg, dict) else ""
+            label = seg_name
+            if seg_q:
+                label += f" ({seg_q})"
+            if seg_type:
+                label += f" [{seg_type}]"
+            parts.append(f"  - {label}")
+    banner_recs = intelligence.get("banner_recommendations", [])
+    if banner_recs:
+        parts.append("- **Banner Recommendations**:")
+        for rec in banner_recs[:4]:
+            rec_name = rec.get("name", "") if isinstance(rec, dict) else str(rec)
+            parts.append(f"  - {rec_name}")
+
+    if len(parts) <= 1:
+        return ""
+    parts.append("")
+    return "\n".join(parts)
+
+
+# ── Domain Category Hints (Change 4) ─────────────────────────────────
+
+_DOMAIN_CATEGORY_HINTS: dict[str, dict] = {
+    "brand tracking": {
+        "description": "Brand health & equity tracking study",
+        "recommended_categories": [
+            "Brand Funnel (awareness → consideration → trial → usage → loyalty)",
+            "Competitive Landscape (client vs key competitors, switching dynamics)",
+            "Media & Touchpoints (ad recall, channel effectiveness, media mix)",
+            "Attitudinal Segments (brand image, emotional connection, NPS tiers)",
+        ],
+    },
+    "u&a": {
+        "description": "Usage & Attitude study",
+        "recommended_categories": [
+            "Category Engagement (usage frequency, occasion, repertoire breadth)",
+            "Brand Repertoire (primary brand, brand set, switching patterns)",
+            "Need States (functional vs emotional needs, unmet needs)",
+            "User Typology (heavy/medium/light, loyal/switcher/lapsed)",
+        ],
+    },
+    "satisfaction": {
+        "description": "Customer satisfaction / NPS study",
+        "recommended_categories": [
+            "Touchpoint Experience (channel satisfaction, journey stage)",
+            "CSAT-Loyalty Nexus (satisfaction × NPS × retention intent)",
+            "Problem Resolution (complaint type, resolution satisfaction)",
+            "Customer Lifetime Value (tenure × spend × advocacy)",
+        ],
+    },
+    "ad test": {
+        "description": "Advertising / Creative testing study",
+        "recommended_categories": [
+            "Ad Impact (recall, persuasion, brand linkage)",
+            "Creative Diagnostics (message clarity, emotional response, uniqueness)",
+            "Target Receptivity (by segment, by media exposure, by brand relationship)",
+            "Competitive Context (category ad clutter, share of voice)",
+        ],
+    },
+    "concept test": {
+        "description": "Concept / Product testing study",
+        "recommended_categories": [
+            "Concept Appeal (purchase intent, uniqueness, relevance)",
+            "Need Fit (problem-solution fit, unmet need addressal)",
+            "Price Sensitivity (willingness to pay, value perception)",
+            "Target Segments (early adopter, mainstream, skeptic)",
+        ],
+    },
+    "product test": {
+        "description": "Product testing / sensory evaluation study",
+        "recommended_categories": [
+            "Product Experience (overall liking, attribute ratings)",
+            "Sensory Profile (taste, texture, appearance, aroma)",
+            "Usage Context (occasion, preparation method, pairing)",
+            "Preference Segments (by product variant, by user type)",
+        ],
+    },
+    "segmentation": {
+        "description": "Market segmentation study",
+        "recommended_categories": [
+            "Behavioral Segments (usage patterns, purchase behavior)",
+            "Attitudinal Segments (values, motivations, lifestyle)",
+            "Needs-Based Segments (primary need, occasion-driven needs)",
+            "Value Segments (price sensitivity × quality expectation)",
+        ],
+    },
+}
+
+
+def _get_domain_guidance(intelligence: dict | None) -> str:
+    """study_type partial matching으로 해당 도메인 힌트를 반환.
+
+    매칭 실패 시 빈 문자열 (graceful degradation).
+    """
+    if not intelligence:
+        return ""
+    study_type = (intelligence.get("study_type", "") or "").lower()
+    if not study_type:
+        return ""
+
+    for domain_key, hints in _DOMAIN_CATEGORY_HINTS.items():
+        if domain_key in study_type or study_type in domain_key:
+            lines = [f"## DOMAIN GUIDANCE — {hints['description']}",
+                     "The following category themes are typical for this study type. "
+                     "Use them as inspiration (adapt to this specific study):"]
+            for cat in hints["recommended_categories"]:
+                lines.append(f"- {cat}")
+            lines.append("")
+            return "\n".join(lines)
+    return ""
+
+
+# ── Domain Composite Examples (Change 9) ─────────────────────────────
+
+_DOMAIN_COMPOSITE_EXAMPLES: dict[str, str] = {
+    "brand tracking": """## DOMAIN COMPOSITE EXAMPLES (Brand Tracking)
+- **Funnel Stage**: awareness Q × consideration Q × trial Q → "Loyal Advocate", "Aware Non-Considerer", "Unaware"
+- **Brand Equity Segment**: overall opinion Q × recommendation Q → "Brand Champion", "Passive Positive", "Detractor"
+- **Media-Influenced**: ad recall Q × brand consideration Q → "Ad-Driven Considerer", "Organic Considerer", "Exposed Non-Considerer"
+- **Competitive Vulnerability**: client brand satisfaction Q × competitor consideration Q → "Secure Loyal", "At-Risk", "Already Lost"
+""",
+    "u&a": """## DOMAIN COMPOSITE EXAMPLES (U&A)
+- **Category Engagement**: usage frequency Q × number of brands used Q → "Heavy Loyalist", "Heavy Switcher", "Light User"
+- **Need-Based Segment**: primary need Q × satisfaction Q → "Satisfied Core Need", "Unmet Need Seeker", "Indifferent"
+- **Brand Relationship**: brand usage Q × purchase intent Q → "Committed User", "Habitual User", "Trial Seeker"
+- **Occasion Typology**: usage occasion Q × usage frequency Q → "Daily Routine", "Special Occasion", "Impulse"
+""",
+    "satisfaction": """## DOMAIN COMPOSITE EXAMPLES (Satisfaction)
+- **Loyalty Risk**: overall satisfaction Q × NPS Q → "Secure Promoter", "Vulnerable Passive", "Active Detractor"
+- **Service Recovery**: problem experience Q × resolution satisfaction Q → "Recovered", "Unresolved Complainer", "Silent Sufferer"
+- **Value Segment**: satisfaction Q × price sensitivity Q → "Value Advocate", "Price-Trapped", "Premium Loyalist"
+- **Engagement Level**: contact frequency Q × satisfaction Q × NPS Q → "Engaged Promoter", "Disengaged Passive", "Frequent Detractor"
+""",
+    "ad test": """## DOMAIN COMPOSITE EXAMPLES (Ad Test)
+- **Ad Effectiveness**: ad recall Q × brand linkage Q → "Strong Brander", "Generic Recall", "No Impact"
+- **Persuasion Segment**: purchase intent shift Q × ad liking Q → "Persuaded Liker", "Liked Not Persuaded", "Resistant"
+- **Creative Resonance**: message clarity Q × emotional response Q → "Head & Heart", "Rational Only", "Emotional Only"
+""",
+    "concept test": """## DOMAIN COMPOSITE EXAMPLES (Concept Test)
+- **Concept Viability**: purchase intent Q × uniqueness Q → "Must-Have", "Nice-to-Have", "Me-Too"
+- **Target Fit**: relevance Q × unmet need Q → "Perfect Fit", "Partial Fit", "No Fit"
+- **Adoption Readiness**: interest Q × price acceptance Q → "Early Adopter", "Wait-and-See", "Price Barrier"
+""",
+}
+
+
+def _get_domain_composite_examples(intelligence: dict | None) -> str:
+    """도메인별 composite 패턴 예시를 반환.
+
+    매칭 실패 시 빈 문자열 (graceful degradation).
+    """
+    if not intelligence:
+        return ""
+    study_type = (intelligence.get("study_type", "") or "").lower()
+    if not study_type:
+        return ""
+
+    for domain_key, examples in _DOMAIN_COMPOSITE_EXAMPLES.items():
+        if domain_key in study_type or study_type in domain_key:
+            return examples
+    return ""
+
+
+# ── Role-Banner Relevance (Change 8 — semantic assignment) ───────────
+
+_ROLE_BANNER_RELEVANCE: dict[str, dict[str, float]] = {
+    "awareness": {
+        "brand": 1.0, "funnel": 1.0, "media": 0.9, "competitive": 0.9,
+        "demographic": 0.8, "attitude": 0.7, "segment": 1.0,
+    },
+    "usage_experience": {
+        "usage": 1.0, "behavior": 1.0, "brand": 0.9, "satisfaction": 0.8,
+        "demographic": 0.8, "segment": 1.0, "need": 0.9,
+    },
+    "evaluation": {
+        "satisfaction": 1.0, "attitude": 1.0, "brand": 0.9, "loyalty": 0.9,
+        "demographic": 0.8, "segment": 1.0, "competitive": 0.8,
+    },
+    "intent_loyalty": {
+        "loyalty": 1.0, "brand": 1.0, "funnel": 0.9, "satisfaction": 0.9,
+        "demographic": 0.8, "segment": 1.0, "competitive": 0.9,
+    },
+    "other": {
+        "demographic": 0.8, "segment": 1.0, "brand": 0.8,
+        "attitude": 0.8, "behavior": 0.8,
+    },
+}
+
+_MIN_RELEVANCE_THRESHOLD = 0.0  # 초기값: 필터링 없이 정렬만 (안전)
+
+
+def _score_banner_relevance(question: SurveyQuestion,
+                             banner: Banner) -> float:
+    """문항-배너 의미적 적합도 점수를 반환.
+
+    - Composite 배너 → 항상 1.0 (전략 세그먼트)
+    - role 미설정 → 0.8 (기본 포함)
+    - role + category keyword 매칭 → 가중치 적용
+    """
+    if banner.banner_type == "composite":
+        return 1.0
+
+    role = (question.role or "").lower()
+    if not role:
+        return 0.8
+
+    role_weights = _ROLE_BANNER_RELEVANCE.get(role, _ROLE_BANNER_RELEVANCE.get("other", {}))
+    if not role_weights:
+        return 0.8
+
+    # 배너 카테고리 + 이름에서 keyword 매칭
+    banner_text = f"{(banner.category or '')} {(banner.name or '')}".lower()
+    best_weight = 0.8  # 기본값
+    for keyword, weight in role_weights.items():
+        if keyword in banner_text:
+            best_weight = max(best_weight, weight)
+    return best_weight
+
+
 # ======================================================================
 # Survey Intelligence Analysis
 # ======================================================================
@@ -843,6 +1091,9 @@ def _create_research_plan(
         연구 기획서 dict 또는 None (실패 시)
     """
     lines = []
+    study_params = _build_structured_study_params(survey_context, intelligence)
+    if study_params:
+        lines.append(study_params)
     if survey_context:
         lines.append(survey_context)
         lines.append("")
@@ -935,10 +1186,22 @@ Independently analyze the Research Plan and questionnaire, then propose banner c
       "name": "Composite segment name",
       "questions": ["Q1", "Q2"],
       "logic": "Combination logic description",
-      "analytical_value": "Why this composite is valuable"
+      "analytical_value": "Why this composite is valuable",
+      "quality_scores": {
+        "feasibility": 8,
+        "uniqueness": 7,
+        "business_impact": 9
+      }
     }
   ]
-}"""
+}
+
+## Composite Quality Scoring
+For EVERY composite proposal, rate these 3 dimensions (1-10):
+- **Feasibility** (DP perspective): Can the combination actually be computed? Are filter conditions compatible?
+- **Uniqueness** (Research perspective): Does this reveal insights NOT visible in any single question?
+- **Business Impact** (Client perspective): Would this segment change the client's strategy?
+Only propose composites with average score >= 6."""
 
 
 _EXPERT_RESEARCH_DIRECTOR_SYSTEM = _EXPERT_COMMON_PREAMBLE + """
@@ -1004,10 +1267,17 @@ def _expert_research_director(
     questions: List[SurveyQuestion],
     language: str,
     survey_context: str,
+    intelligence: dict | None = None,
 ) -> dict:
     """Research Director 전문가 분석."""
 
     lines = []
+    study_params = _build_structured_study_params(survey_context, intelligence)
+    if study_params:
+        lines.append(study_params)
+    domain_guide = _get_domain_guidance(intelligence)
+    if domain_guide:
+        lines.append(domain_guide)
     if survey_context:
         lines.append(survey_context)
         lines.append("")
@@ -1030,10 +1300,14 @@ def _expert_dp_manager(
     questions: List[SurveyQuestion],
     language: str,
     survey_context: str,
+    intelligence: dict | None = None,
 ) -> dict:
     """DP Manager 전문가 분석 — full answer options 포함."""
 
     lines = []
+    study_params = _build_structured_study_params(survey_context, intelligence)
+    if study_params:
+        lines.append(study_params)
     if survey_context:
         lines.append(survey_context)
         lines.append("")
@@ -1046,7 +1320,7 @@ def _expert_dp_manager(
 
     result = _call_llm_json_with_fallback(
         _EXPERT_DP_MANAGER_SYSTEM, "\n".join(lines),
-        MODEL_INTELLIGENCE, temperature=0.1, max_tokens=12288,
+        MODEL_INTELLIGENCE, temperature=0.25, max_tokens=12288,
     )
     result.setdefault("expert_name", "dp_manager")
     return result
@@ -1057,10 +1331,17 @@ def _expert_client_insights(
     questions: List[SurveyQuestion],
     language: str,
     survey_context: str,
+    intelligence: dict | None = None,
 ) -> dict:
     """Client Insights Manager 전문가 분석."""
 
     lines = []
+    study_params = _build_structured_study_params(survey_context, intelligence)
+    if study_params:
+        lines.append(study_params)
+    domain_guide = _get_domain_guidance(intelligence)
+    if domain_guide:
+        lines.append(domain_guide)
     if survey_context:
         lines.append(survey_context)
         lines.append("")
@@ -1084,6 +1365,7 @@ def _run_expert_panel(
     language: str,
     survey_context: str,
     progress_callback: Callable | None = None,
+    intelligence: dict | None = None,
 ) -> List[dict]:
     """3명의 전문가 패널 병렬 실행.
 
@@ -1102,7 +1384,10 @@ def _run_expert_panel(
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {}
         for name, fn in expert_fns:
-            future = executor.submit(fn, research_plan, questions, language, survey_context)
+            future = executor.submit(
+                fn, research_plan, questions, language, survey_context,
+                intelligence=intelligence,
+            )
             futures[future] = name
 
         done_count = 0
@@ -1150,7 +1435,9 @@ _SYNTHESIS_SYSTEM_PROMPT = """You are a senior Research Director synthesizing in
 ## Quality Requirements
 - Minimum 4 categories
 - Minimum 10 total dimensions across all categories
-- At least 30% composite dimensions
+- At least **35%** composite dimensions (combining 2+ questions)
+- **At least 4** distinct composite dimensions
+- **At least 1** "deep" composite combining 3+ questions
 - Every primary research objective must have at least 1 dimension
 - Demographics should be <= 30% of total dimensions
 
@@ -1200,6 +1487,8 @@ def _synthesize_expert_consensus(
     research_plan: dict,
     questions: List[SurveyQuestion],
     language: str,
+    survey_context: str = "",
+    intelligence: dict | None = None,
 ) -> dict | None:
     """3명의 전문가 출력을 중재 규칙으로 통합하여 합의 분석 계획 생성.
 
@@ -1207,12 +1496,17 @@ def _synthesize_expert_consensus(
         합의 분석 계획 dict (기존 _create_analysis_plan 출력 호환) 또는 None
     """
 
-
     if not expert_outputs:
         logger.warning("No expert outputs to synthesize")
         return None
 
     lines = []
+    study_params = _build_structured_study_params(survey_context, intelligence)
+    if study_params:
+        lines.append(study_params)
+    domain_guide = _get_domain_guidance(intelligence)
+    if domain_guide:
+        lines.append(domain_guide)
     lines.append(f"## Research Plan (language: {language})")
     lines.append(_json.dumps(research_plan, ensure_ascii=False, indent=2))
     lines.append("")
@@ -1336,6 +1630,9 @@ Banner dimensions can come from ANY question type — profiling, behavioral, att
 ## Quality Standard
 Each banner must pass the "VP of Insights" test: if a VP sees this banner in a cross-tab, they should immediately understand what segment they're looking at and why it matters for the brand strategy.
 
+## Survey Flow Context
+You may receive a list of "Other Questions" that are NOT candidates for banners. Use them ONLY to understand the survey flow, question ordering, and thematic structure. Do NOT create banners from non-candidate questions.
+
 ## Implementation Rules
 
 ### Condition Format
@@ -1431,7 +1728,8 @@ These are the MOST VALUABLE banners. They create strategic segments that don't e
 def _design_banners_from_plan(analysis_plan: dict,
                                questions: List[SurveyQuestion],
                                language: str,
-                               survey_context: str) -> dict | None:
+                               survey_context: str,
+                               intelligence: dict | None = None) -> dict | None:
     """Step 2: 분석 계획 기반 배너 설계.
 
     Args:
@@ -1439,6 +1737,7 @@ def _design_banners_from_plan(analysis_plan: dict,
         questions: 전체 문항 리스트
         language: 설문지 언어
         survey_context: Study Brief + Intelligence
+        intelligence: Survey Intelligence 결과 dict
 
     Returns:
         배너 스펙 dict ({"banners": [...]}) 또는 None
@@ -1470,6 +1769,12 @@ def _design_banners_from_plan(analysis_plan: dict,
     # 프롬프트 구성
 
     lines = []
+    study_params = _build_structured_study_params(survey_context, intelligence)
+    if study_params:
+        lines.append(study_params)
+    domain_guide = _get_domain_guidance(intelligence)
+    if domain_guide:
+        lines.append(domain_guide)
     if survey_context:
         lines.append(survey_context)
         lines.append("")
@@ -1509,10 +1814,25 @@ def _design_banners_from_plan(analysis_plan: dict,
             lines.append(f"- **{comp.get('name', '')}**: {comp.get('logic', '')}")
             lines.append(f"  Value: {comp.get('analytical_value', '')}")
 
+    # Domain-specific composite examples (Change 9)
+    domain_composites = _get_domain_composite_examples(intelligence)
+    if domain_composites:
+        lines.append("")
+        lines.append(domain_composites)
+
     lines.append("")
     lines.append(f"## Candidate Question Details ({len(candidate_qs)} questions)")
     lines.append("")
     lines.append(_format_questions_full(candidate_qs))
+
+    # Non-candidate questions for flow context (Change 2)
+    non_candidate_qs = [q for q in questions if q.question_number not in candidate_qns]
+    if non_candidate_qs:
+        lines.append("")
+        lines.append(f"## Other Questions (for flow context only) ({len(non_candidate_qs)} questions)")
+        lines.append("NOTE: You may reference these for understanding the survey flow, "
+                      "but ONLY create banners from candidate questions above.")
+        lines.append(_format_questions_compact(non_candidate_qs, include_options=False))
 
     user_prompt = "\n".join(lines)
 
@@ -2054,9 +2374,10 @@ def _fallback_direct_banner(candidates: List[SurveyQuestion],
     return _parse_banner_spec_to_models(raw)
 
 
-_MIN_BANNER_COUNT = 8           # 최소 배너 수
-_MIN_COMPOSITE_COUNT = 3        # 최소 composite 배너 수
-_MIN_CATEGORY_COUNT = 3         # 최소 카테고리 수
+_MIN_BANNER_COUNT = 10          # 최소 배너 수 (was 8)
+_MIN_COMPOSITE_COUNT = 4        # 최소 composite 배너 수 (was 3)
+_MIN_DEEP_COMPOSITE = 1         # 3+ 문항 composite 최소 1개 (NEW)
+_MIN_CATEGORY_COUNT = 4         # 최소 카테고리 수 (was 3)
 _MAX_RETRY = 2                  # 품질 미달 시 재시도 횟수 (총 3회 시도)
 
 
@@ -2072,8 +2393,8 @@ _DEMO_KEYWORDS = frozenset([
     "demographics", "demographic", "인구통계",
 ])
 
-_MIN_AVG_VALUES = 2.8           # 배너당 평균 최소 value 수
-_MAX_DEMO_RATIO = 0.40          # 데모 배너 비율 상한
+_MIN_AVG_VALUES = 3.0           # 배너당 평균 최소 value 수 (was 2.8)
+_MAX_DEMO_RATIO = 0.35          # 데모 배너 비율 상한 (was 0.40)
 
 
 def _is_demo_banner(banner: dict) -> bool:
@@ -2140,6 +2461,8 @@ def _assess_banner_quality(banner_spec: dict) -> dict:
         issues.append(f"Only {len(categories)} categories (minimum: {_MIN_CATEGORY_COUNT})")
     if avg_values < _MIN_AVG_VALUES:
         issues.append(f"Avg {avg_values:.1f} values/banner (minimum: {_MIN_AVG_VALUES})")
+    if deep_composite_count < _MIN_DEEP_COMPOSITE:
+        issues.append(f"Only {deep_composite_count} deep composite (3+ questions) banners (minimum: {_MIN_DEEP_COMPOSITE})")
     if total >= 6 and demo_ratio > _MAX_DEMO_RATIO:
         issues.append(f"Demographics {demo_count}/{total} ({demo_ratio:.0%}) exceeds {_MAX_DEMO_RATIO:.0%} cap — add behavioral/attitudinal banners")
 
@@ -2189,8 +2512,8 @@ def _assess_plan_quality(plan: dict) -> dict:
     warnings = []
     if total < 8:
         issues.append(f"Only {total} dimensions (minimum: 8)")
-    if composite_ratio < 0.25:
-        issues.append(f"Only {composite_count}/{total} composite ({composite_ratio:.0%}, minimum: 25%)")
+    if composite_ratio < 0.30:
+        issues.append(f"Only {composite_count}/{total} composite ({composite_ratio:.0%}, minimum: 30%)")
     if cat_count < 3:
         issues.append(f"Only {cat_count} categories (minimum: 3)")
     if cat_count > 8:
@@ -2268,10 +2591,28 @@ def suggest_banner_points(
         if progress_callback:
             progress_callback(event, data)
 
-    # ── Step 0.5: Research Plan ──
+    # ── Step 0.5: Research Plan (with retry — Change 3) ──
     _cb("phase", {"name": "research_plan", "status": "start"})
-    logger.info("Banner pipeline Step 0.5: Creating research plan...")
-    research_plan = _create_research_plan(questions, language, survey_context, intelligence)
+    research_plan = None
+    for rp_attempt in range(_MAX_RETRY + 1):
+        tag = f" (retry {rp_attempt})" if rp_attempt > 0 else ""
+        logger.info(f"Banner pipeline Step 0.5: Creating research plan...{tag}")
+        research_plan = _create_research_plan(questions, language, survey_context, intelligence)
+        if not research_plan:
+            break
+
+        objectives = research_plan.get("research_objectives", [])
+        dim_map = research_plan.get("objective_dimension_map", [])
+        all_dims = [d for m in dim_map for d in m.get("dimensions", [])]
+
+        if len(objectives) >= 3 and len(all_dims) >= 6:
+            break  # 품질 충분
+
+        if rp_attempt < _MAX_RETRY:
+            logger.warning(f"Research plan quality low (objectives={len(objectives)}, "
+                           f"dimensions={len(all_dims)}) — retrying")
+        else:
+            logger.warning(f"Research plan quality low after retries — proceeding")
     _cb("phase", {"name": "research_plan", "status": "done"})
 
     if not research_plan or not research_plan.get("research_objectives"):
@@ -2286,6 +2627,7 @@ def suggest_banner_points(
     expert_outputs = _run_expert_panel(
         research_plan, questions, language, survey_context,
         progress_callback=progress_callback,
+        intelligence=intelligence,
     )
 
     if len(expert_outputs) < 2:
@@ -2300,6 +2642,7 @@ def suggest_banner_points(
     logger.info("Banner pipeline Step 1.5: Synthesizing expert consensus...")
     analysis_plan = _synthesize_expert_consensus(
         expert_outputs, research_plan, questions, language,
+        survey_context=survey_context, intelligence=intelligence,
     )
 
     if not analysis_plan or not analysis_plan.get("banner_dimensions"):
@@ -2331,7 +2674,10 @@ def suggest_banner_points(
     for attempt in range(_MAX_RETRY + 1):
         tag = f" (retry {attempt})" if attempt > 0 else ""
         logger.info(f"Banner pipeline Step 2: Designing banners from consensus plan...{tag}")
-        banner_spec = _design_banners_from_plan(analysis_plan, questions, language, survey_context)
+        banner_spec = _design_banners_from_plan(
+            analysis_plan, questions, language, survey_context,
+            intelligence=intelligence,
+        )
 
         if not banner_spec or not banner_spec.get("banners"):
             logger.warning("Step 2 failed — returning empty banners")
@@ -2538,6 +2884,7 @@ def assign_banners_to_questions(questions: List[SurveyQuestion],
     banner_ref_map: dict[str, set[str]] = {
         b.banner_id: _extract_all_banner_qns(b) for b in banners
     }
+    banner_map: dict[str, Banner] = {b.banner_id: b for b in banners}
 
     all_banner_ids = [b.banner_id for b in banners]
     result = {}
@@ -2583,6 +2930,20 @@ def assign_banners_to_questions(questions: List[SurveyQuestion],
             if filter_qns and filter_qns & banner_qns:
                 continue
             applicable.append(bid)
+
+        # Rule 6: Sort applicable banners by semantic relevance score (desc)
+        if applicable and len(applicable) > 1:
+            applicable.sort(
+                key=lambda bid: _score_banner_relevance(q, banner_map[bid]),
+                reverse=True,
+            )
+            # Optional threshold filtering (currently 0.0 = no filtering)
+            if _MIN_RELEVANCE_THRESHOLD > 0:
+                applicable = [
+                    bid for bid in applicable
+                    if _score_banner_relevance(q, banner_map[bid]) >= _MIN_RELEVANCE_THRESHOLD
+                ]
+
         result[q.question_number] = ",".join(applicable)
 
     return result
