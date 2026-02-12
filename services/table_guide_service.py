@@ -1,6 +1,6 @@
 """Table Guide Builder 서비스 레이어.
 
-Phase 2: Base Definition + Net/Recode
+Phase 2: Net/Recode
 Phase 3: Banner Management + Sort + SubBanner
 Phase 4: Special Instructions + Full Compile + Export
 """
@@ -99,7 +99,6 @@ def _call_llm_json_with_fallback(system_prompt: str, user_prompt: str,
 
 # ── 모델 할당 ────────────────────────────────────────────────────
 MODEL_INTELLIGENCE = MODEL_TITLE_GENERATOR          # GPT-5 — 깊은 이해력 필요
-MODEL_BASE_GENERATOR = DEFAULT_MODEL               # GPT-4.1-mini
 MODEL_NET_GENERATOR = DEFAULT_MODEL                # GPT-4.1-mini
 MODEL_BANNER_SUGGESTER = MODEL_TITLE_GENERATOR     # GPT-5 — 전문가 수준 배너 설계
 MODEL_SUBBANNER_SUGGESTER = DEFAULT_MODEL          # GPT-4.1-mini
@@ -557,122 +556,6 @@ def analyze_survey_intelligence(questions: List[SurveyQuestion],
         if study_objective:
             fallback["research_objectives"] = [study_objective]
         return fallback
-
-
-# ======================================================================
-# Phase 2: Base Definition
-# ======================================================================
-
-_BASE_SYSTEM_PROMPT = """You are a DP specialist for marketing research cross-tabulation.
-Your task is to generate a human-readable Base description for each survey question.
-
-## Rules
-1. If a question has a filter_condition, describe WHO is included in the base.
-   - Convert raw filter codes like "Q2=1,2" into readable labels using the referenced question's text and answer options.
-   - Example: Q2=1,2 where Q2 is "Brand Awareness" with options 1=Aware, 2=Used → "Q2(Brand Awareness) 'Aware' or 'Used' respondents"
-2. If no filter_condition exists, the base is "All Respondents".
-3. Keep descriptions concise (one line).
-4. Respond in the same language as the question text.
-5. When Survey Context is provided, use the overall questionnaire flow to better interpret filter references and produce more accurate base descriptions.
-
-## JSON Output Format
-{
-  "results": [
-    {"question_number": "Q1", "base": "All Respondents"},
-    {"question_number": "Q3", "base": "Q2(Brand Awareness) 'Aware' or 'Used' respondents"}
-  ]
-}"""
-
-
-def generate_bases(questions: List[SurveyQuestion], language: str = "ko",
-                   progress_callback=None, survey_context: str = "") -> dict:
-    """Base 설명 생성 — 필터 있으면 LLM 보강, 없으면 'All Respondents'.
-
-    Returns:
-        dict: {question_number: base_string}
-    """
-    result = {}
-    needs_llm = []
-
-    # 문항별 컨텍스트 맵 (필터 해석에 사용)
-    qn_context = {}
-    for q in questions:
-        qn_context[q.question_number] = {
-            "text": q.question_text,
-            "options": q.answer_options_compact(),
-        }
-
-    for q in questions:
-        if q.filter_condition and q.filter_condition.strip():
-            needs_llm.append(q)
-        else:
-            result[q.question_number] = "All Respondents"
-
-    if not needs_llm:
-        return result
-
-    # 배치 분할
-    batches = [needs_llm[i:i + BATCH_SIZE] for i in range(0, len(needs_llm), BATCH_SIZE)]
-    total_batches = len(batches)
-
-    for batch_idx, batch in enumerate(batches):
-        if progress_callback:
-            progress_callback("base_batch_start", {
-                "batch_index": batch_idx, "total_batches": total_batches,
-                "question_count": len(batch),
-            })
-
-        # 프롬프트에 필터 문항의 컨텍스트 포함
-        lines = []
-        if survey_context:
-            lines.append(survey_context)
-            lines.append("")
-        referenced_qns = set()
-        for q in batch:
-            # 필터에서 참조하는 문항번호 추출
-            refs = re.findall(r'([A-Z]+\d+[a-zA-Z]*)', q.filter_condition or "")
-            for ref in refs:
-                if ref in qn_context:
-                    referenced_qns.add(ref)
-
-        # 참조 문항 컨텍스트
-        if referenced_qns:
-            lines.append("## Referenced Questions Context")
-            for ref_qn in sorted(referenced_qns):
-                ctx = qn_context[ref_qn]
-                lines.append(f"[{ref_qn}] {ctx['text']}")
-                if ctx['options']:
-                    lines.append(f"  Options: {ctx['options']}")
-            lines.append("")
-
-        lines.append("## Questions to process")
-        for q in batch:
-            lines.append(f"[{q.question_number}] Filter: {q.filter_condition}")
-            lines.append(f"  Text: {q.question_text}")
-
-        user_prompt = "\n".join(lines)
-
-        try:
-            raw = call_llm_json(_BASE_SYSTEM_PROMPT, user_prompt, MODEL_BASE_GENERATOR)
-            for r in raw.get("results", []):
-                qn = str(r.get("question_number", "")).strip()
-                base = str(r.get("base", "")).strip()
-                if qn and base:
-                    result[qn] = base
-        except Exception as e:
-            logger.error(f"Base generation batch {batch_idx} failed: {e}")
-
-        # LLM이 누락한 문항은 필터 텍스트 그대로 사용
-        for q in batch:
-            if q.question_number not in result:
-                result[q.question_number] = q.filter_condition or "All Respondents"
-
-        if progress_callback:
-            progress_callback("base_batch_done", {
-                "batch_index": batch_idx, "total_batches": total_batches,
-            })
-
-    return result
 
 
 # ======================================================================
@@ -3345,7 +3228,6 @@ def compile_table_guide(doc: SurveyDocument, project_name: str = "",
             "TableTitle": q.table_title,
             "QuestionType": q.question_type or "",
             "SummaryType": q.summary_type,
-            "Base": q.base,
             "NetRecode": q.net_recode,
             "Sort": q.sort_order,
             "SubBanner": q.sub_banner,
@@ -3436,7 +3318,7 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
     # ── Sheet 2: Table Guide ──
     ws_tg = wb.create_sheet("Table Guide")
     tg_headers = [
-        "Base", "Sort", "QuestionNumber", "TableNumber", "QuestionText",
+        "Sort", "QuestionNumber", "TableNumber", "QuestionText",
         "TableTitle", "SubBanner", "QuestionType", "SummaryType",
         "NetRecode", "BannerIDs", "BannerNames", "SpecialInstructions",
         "Filter", "GrammarChecker",
@@ -3454,7 +3336,6 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
         gc = qn_grammar.get(key, "")
         banner_ids_val = row.get("BannerIDs", "")
         ws_tg.append([
-            row.get("Base", ""),
             row.get("Sort", ""),
             row.get("QuestionNumber", ""),
             row.get("TableNumber", ""),

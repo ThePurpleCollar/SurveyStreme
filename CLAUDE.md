@@ -4,7 +4,7 @@
 
 ## Tech Stack
 - Python 3.11+, Streamlit, Poetry
-- LLM: Gemini 2.5 Pro (문항 추출), GPT-5 (Title/Grammar/Quality), GPT-4.1-mini (Length/Checklist)
+- LLM: Gemini 2.5 Pro (문항 추출), GPT-5 (Title/Grammar/Quality), GPT-4.1-mini (Net·Length/Checklist)
 - LLM 프록시: LiteLLM (Ipsos 내부)
 - 주요 라이브러리: python-docx, PyMuPDF, pandas, openai, openpyxl
 

@@ -1,7 +1,7 @@
 """Table Guide Builder 페이지.
 
 Phase 1: Table Title 생성 (LLM 배치 + 접미사 알고리즘)
-Phase 2: Base Definition + Net/Recode
+Phase 2: Net/Recode
 Phase 3: Banner Management
 Phase 4: Review & Export
 """
@@ -21,7 +21,7 @@ from services.table_guide_service import (
     analyze_survey_intelligence,
     assign_banners_to_questions,
     compile_table_guide, expand_banner_ids, export_table_guide_excel,
-    generate_bases, generate_net_recodes,
+    generate_net_recodes,
     generate_sort_orders, generate_special_instructions,
     suggest_banner_points, suggest_sub_banners,
 )
@@ -369,7 +369,7 @@ def _compute_completeness():
     """탭 라벨 및 상단 진행률 표시를 위한 완성도 계산."""
     doc = st.session_state.get("survey_document")
     df = st.session_state.get("edited_df")
-    stats = {"total": 0, "titles": 0, "bases": 0, "nets": 0,
+    stats = {"total": 0, "titles": 0, "nets": 0,
              "banners": 0, "banner_assigned": 0, "sorts": 0,
              "special_instructions": 0}
 
@@ -382,7 +382,6 @@ def _compute_completeness():
                 unique_qs.append(q)
         stats["total"] = len(unique_qs)
         stats["titles"] = sum(1 for q in unique_qs if q.table_title)
-        stats["bases"] = sum(1 for q in unique_qs if q.base)
         stats["nets"] = sum(1 for q in unique_qs if q.net_recode)
         stats["banners"] = len(doc.banners)
         stats["banner_assigned"] = sum(1 for q in unique_qs if q.banner_ids)
@@ -390,8 +389,7 @@ def _compute_completeness():
         stats["special_instructions"] = sum(1 for q in unique_qs if q.special_instructions)
     elif df is not None and not df.empty:
         stats["total"] = df["QuestionNumber"].nunique()
-        for col, key in [("TableTitle", "titles"), ("Base", "bases"),
-                          ("NetRecode", "nets")]:
+        for col, key in [("TableTitle", "titles"), ("NetRecode", "nets")]:
             if col in df.columns:
                 filled = df[df[col].astype(str).str.strip() != ""]
                 stats[key] = filled["QuestionNumber"].nunique()
@@ -575,21 +573,21 @@ def _tab_table_titles(df: pd.DataFrame, language: str):
 
 
 # ======================================================================
-# Tab 2: Base & Net/Recode
+# Tab 2: Net/Recode
 # ======================================================================
 
-def _tab_base_net_recode(df: pd.DataFrame, language: str):
-    """Tab 2: Base Definition + Net/Recode."""
+def _tab_net_recode(df: pd.DataFrame, language: str):
+    """Tab 2: Net/Recode."""
     questions = _get_questions()
     if not questions:
         st.warning("No questions available. Please run Questionnaire Analyzer first.")
         return
 
-    generate_clicked = st.button("Generate Base & Net/Recode", type="primary",
-                                 key="generate_base_net_btn")
+    generate_clicked = st.button("Generate Net/Recode", type="primary",
+                                 key="generate_net_btn")
 
     if generate_clicked:
-        with st.status("Generating Base & Net/Recode...", expanded=True) as status:
+        with st.status("Generating Net/Recode...", expanded=True) as status:
             progress_bar = st.progress(0)
             log_area = st.empty()
 
@@ -597,14 +595,9 @@ def _tab_base_net_recode(df: pd.DataFrame, language: str):
                 if "batch_start" in event:
                     log_area.text(f"[{event}] Batch {data['batch_index']+1}/{data['total_batches']}...")
                 elif "batch_done" in event:
-                    progress_bar.progress(0.5 if "base" in event else 1.0)
+                    progress_bar.progress(1.0)
 
             survey_ctx = _get_survey_context(df=df)
-
-            log_area.text("Generating Base definitions...")
-            base_map = generate_bases(questions, language, _progress_cb,
-                                      survey_context=survey_ctx)
-            _sync_field_to_df_and_doc(base_map, "Base", "base")
 
             log_area.text("Generating Net/Recode suggestions...")
             net_map = generate_net_recodes(questions, language, _progress_cb,
@@ -612,47 +605,36 @@ def _tab_base_net_recode(df: pd.DataFrame, language: str):
             _sync_field_to_df_and_doc(net_map, "NetRecode", "net_recode")
 
             progress_bar.progress(1.0)
-            st.session_state["base_net_generated"] = True
-            status.update(label="Base & Net/Recode generation complete!", state="complete")
+            st.session_state["net_generated"] = True
+            status.update(label="Net/Recode generation complete!", state="complete")
 
     # Dashboard 메트릭
-    if st.session_state.get("base_net_generated"):
+    if st.session_state.get("net_generated") or st.session_state.get("base_net_generated"):
         st.divider()
 
-        # 메트릭 계산 from current data
         doc = st.session_state.get("survey_document")
         if doc:
             seen = set()
-            all_resp_count = 0
-            filtered_count = 0
             net_count = 0
             no_net_count = 0
             for q in doc.questions:
                 if q.question_number in seen:
                     continue
                 seen.add(q.question_number)
-                if q.base == "All Respondents" or not q.base:
-                    all_resp_count += 1
-                else:
-                    filtered_count += 1
                 if q.net_recode:
                     net_count += 1
                 else:
                     no_net_count += 1
 
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2 = st.columns(2)
             with c1:
-                st.metric("All Respondents", all_resp_count)
-            with c2:
-                st.metric("Filtered Base", filtered_count)
-            with c3:
                 st.metric("With Net/Recode", net_count)
-            with c4:
+            with c2:
                 st.metric("No Net/Recode", no_net_count)
 
         # Filter radio
         bn_filter = st.radio(
-            "Filter", options=["All", "With Filters", "Scale Only", "Custom Net"],
+            "Filter", options=["All", "Scale Only", "Custom Net"],
             horizontal=True, key="bn_filter_radio",
         )
 
@@ -665,9 +647,6 @@ def _tab_base_net_recode(df: pd.DataFrame, language: str):
                     continue
                 seen.add(q.question_number)
 
-                # 필터 적용
-                if bn_filter == "With Filters" and (q.base == "All Respondents" or not q.base):
-                    continue
                 if bn_filter == "Scale Only":
                     qtype_upper = (q.question_type or "").upper()
                     if "SCALE" not in qtype_upper and not re.match(r'\d+\s*PT\s*X\s*\d+', qtype_upper):
@@ -675,23 +654,22 @@ def _tab_base_net_recode(df: pd.DataFrame, language: str):
                 if bn_filter == "Custom Net" and not q.net_recode:
                     continue
 
-                label = f"{q.question_number}: Base={q.base or 'All Respondents'}"
+                label = f"{q.question_number}"
                 if q.net_recode:
-                    label += f" | Net={q.net_recode}"
+                    label += f": Net={q.net_recode}"
 
                 with st.expander(label, expanded=False):
                     st.markdown(f"**Question:** {q.question_text}")
                     st.markdown(f"**Type:** {q.question_type or 'N/A'}")
-                    st.markdown(f"**Base:** {q.base or 'All Respondents'}")
                     if q.filter_condition:
-                        st.caption(f"Raw filter: {q.filter_condition}")
+                        st.caption(f"Filter: {q.filter_condition}")
                     st.markdown(f"**Net/Recode:** {q.net_recode or '(none)'}")
 
     # Editable Table
     st.divider()
     st.subheader("Editable Table")
 
-    display_cols = ["QuestionNumber", "TableNumber", "Base", "NetRecode", "SummaryType"]
+    display_cols = ["QuestionNumber", "TableNumber", "NetRecode", "SummaryType"]
     display_cols = [c for c in display_cols if c in df.columns]
 
     if display_cols:
@@ -703,18 +681,13 @@ def _tab_base_net_recode(df: pd.DataFrame, language: str):
         if st.button("Apply Edits", type="primary", key="apply_bn_edits"):
             for col in display_cols:
                 st.session_state["edited_df"][col] = edited[col]
-            # survey_document에 반영
             if "survey_document" in st.session_state and st.session_state["survey_document"]:
-                qn_base = {}
                 qn_net = {}
                 for _, row in edited.iterrows():
                     qn = str(row.get("QuestionNumber", "")).strip()
                     if qn:
-                        qn_base[qn] = str(row.get("Base", ""))
                         qn_net[qn] = str(row.get("NetRecode", ""))
                 for q in st.session_state["survey_document"].questions:
-                    if q.question_number in qn_base:
-                        q.base = qn_base[q.question_number]
                     if q.question_number in qn_net:
                         q.net_recode = qn_net[q.question_number]
             st.success("Edits applied successfully!")
@@ -1400,14 +1373,14 @@ def _tab_review_export(df: pd.DataFrame, language: str):
         if preview_mode == "Full Table":
             cols = [
                 "QuestionNumber", "TableNumber", "TableTitle", "QuestionType",
-                "Base", "Sort", "NetRecode", "BannerNames", "SubBanner",
+                "Sort", "NetRecode", "BannerNames", "SubBanner",
                 "SpecialInstructions",
             ]
         elif preview_mode == "Identity & Titles":
             cols = ["QuestionNumber", "TableNumber", "QuestionText",
                     "TableTitle", "QuestionType", "SummaryType"]
         elif preview_mode == "Analysis Fields":
-            cols = ["QuestionNumber", "Base", "Sort", "NetRecode",
+            cols = ["QuestionNumber", "Sort", "NetRecode",
                     "SummaryType", "Filter"]
         else:  # Banner & Instructions
             cols = ["QuestionNumber", "QuestionType", "BannerNames",
@@ -1435,7 +1408,7 @@ def _tab_review_export(df: pd.DataFrame, language: str):
         with dl_col2:
             csv_cols = [
                 "QuestionNumber", "TableNumber", "QuestionText", "TableTitle",
-                "QuestionType", "SummaryType", "Base", "Sort", "NetRecode",
+                "QuestionType", "SummaryType", "Sort", "NetRecode",
                 "BannerIDs", "SubBanner", "SpecialInstructions", "Filter",
             ]
             csv_cols = [c for c in csv_cols if c in preview_df.columns]
@@ -1468,7 +1441,7 @@ def _run_generate_all(df: pd.DataFrame, language: str):
     has_questions = bool(questions)
     doc = st.session_state.get("survey_document")
 
-    total_tasks = 4 if has_questions else 1
+    total_tasks = 3 if has_questions else 1
 
     with st.status("Generating all Table Guide fields...", expanded=True) as status:
         progress_bar = st.progress(0)
@@ -1512,11 +1485,6 @@ def _run_generate_all(df: pd.DataFrame, language: str):
             result = _run_title_generation(df, language, noop, survey_context=survey_ctx)
             return ("titles", result, time.time() - t0)
 
-        def _worker_base():
-            t0 = time.time()
-            base_map = generate_bases(questions, language, survey_context=survey_ctx)
-            return ("base", base_map, time.time() - t0)
-
         def _worker_net():
             t0 = time.time()
             net_map = generate_net_recodes(questions, language, survey_context=survey_ctx)
@@ -1537,7 +1505,6 @@ def _run_generate_all(df: pd.DataFrame, language: str):
             futures[executor.submit(_worker_titles)] = "Titles"
 
             if has_questions:
-                futures[executor.submit(_worker_base)] = "Base"
                 futures[executor.submit(_worker_net)] = "Net/Recode"
                 futures[executor.submit(_worker_banner)] = "Banner"
 
@@ -1572,21 +1539,17 @@ def _run_generate_all(df: pd.DataFrame, language: str):
             elapsed_total = time.time() - t_start
             status.update(
                 label=f"Title generation complete in {elapsed_total:.1f}s! "
-                      f"(Base/Net/Banner require DOCX extraction)",
+                      f"(Net/Banner require DOCX extraction)",
                 state="complete",
             )
             return
-
-        if "base" in results:
-            _, base_map, _ = results["base"]
-            _sync_field_to_df_and_doc(base_map, "Base", "base")
 
         if "net" in results:
             _, net_map, _ = results["net"]
             _sync_field_to_df_and_doc(net_map, "NetRecode", "net_recode")
 
-        if "base" in results or "net" in results:
-            st.session_state["base_net_generated"] = True
+        if "net" in results:
+            st.session_state["net_generated"] = True
 
         if "banner" in results:
             _, banner_result, _ = results["banner"]
@@ -1694,7 +1657,7 @@ def page_table_guide_builder():
     df = st.session_state["edited_df"]
 
     # 새 컬럼 초기화
-    for col in ["Base", "NetRecode", "Sort", "SubBanner", "BannerIDs", "SpecialInstructions"]:
+    for col in ["NetRecode", "Sort", "SubBanner", "BannerIDs", "SpecialInstructions"]:
         if col not in df.columns:
             df[col] = ""
     st.session_state["edited_df"] = df
@@ -1740,7 +1703,7 @@ def page_table_guide_builder():
         generate_all_clicked = st.button(
             "Generate All",
             type="secondary",
-            help="Run all generation steps in parallel (Titles, Base, Net, Banner)",
+            help="Run all generation steps in parallel (Titles, Net, Banner)",
         )
 
     if generate_all_clicked:
@@ -1778,7 +1741,6 @@ def page_table_guide_builder():
     if total > 0:
         items = [
             ("Titles", stats["titles"], total),
-            ("Base", stats["bases"], total),
             ("Net", stats["nets"], total),
             ("Banner", stats["banners"], None),
             ("Assigned", stats["banner_assigned"], total),
@@ -1792,7 +1754,7 @@ def page_table_guide_builder():
     # ── 동적 탭 라벨 ──
     tab_labels = [
         _tab_label("Table Titles", stats["titles"], total),
-        _tab_label("Base & Net/Recode", stats["bases"], total),
+        _tab_label("Net/Recode", stats["nets"], total),
         _tab_label("Sort & Details", stats["sorts"], total),
         "Banner \u2713" if stats["banners"] > 0 else "Banner",
         "Review & Export",
@@ -1804,7 +1766,7 @@ def page_table_guide_builder():
         _tab_table_titles(df, language)
 
     with tab2:
-        _tab_base_net_recode(df, language)
+        _tab_net_recode(df, language)
 
     with tab3:
         _tab_sort_details(df, language)

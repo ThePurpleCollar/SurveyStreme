@@ -9,13 +9,13 @@ from openpyxl.utils import get_column_letter
 def df_for_download(processed_df):
     """다운로드용 DataFrame 준비 (컬럼 순서 정리 및 빈 컬럼 추가)"""
     processed_df = processed_df.copy()
-    for col in ['Base', 'Sort', 'TableTitle', 'SubBanner', 'NetRecode',
+    for col in ['Sort', 'TableTitle', 'SubBanner', 'NetRecode',
                  'BannerIDs', 'SpecialInstructions', 'GrammarChecker', 'Other']:
         if col not in processed_df.columns:
             processed_df[col] = ''
 
-    # 컬럼 순서: Base, Sort, QN, TN, QText, Title, SubBanner, QType, SType, NetRecode, BannerIDs, SpecialInstructions, Other, GrammarChecker
-    base_columns = ['Base', 'Sort', 'QuestionNumber', 'TableNumber', 'QuestionText',
+    # 컬럼 순서: Sort, QN, TN, QText, Title, SubBanner, QType, SType, NetRecode, BannerIDs, SpecialInstructions, Other, GrammarChecker
+    base_columns = ['Sort', 'QuestionNumber', 'TableNumber', 'QuestionText',
                     'TableTitle', 'SubBanner', 'QuestionType', 'SummaryType',
                     'NetRecode', 'BannerIDs', 'SpecialInstructions', 'Other', 'GrammarChecker']
 
@@ -43,7 +43,7 @@ def prepare_excel_download(survey_doc) -> bytes:
     ws_main.title = "Questions"
 
     headers = [
-        "Base", "Sort", "QuestionNumber", "TableNumber", "QuestionText",
+        "Sort", "QuestionNumber", "TableNumber", "QuestionText",
         "TableTitle", "SubBanner", "QuestionType", "SummaryType",
         "NetRecode", "BannerIDs", "SpecialInstructions",
         "AnswerOptions", "SkipLogic", "Filter",
@@ -58,7 +58,6 @@ def prepare_excel_download(survey_doc) -> bytes:
 
     for q in survey_doc.questions:
         ws_main.append([
-            q.base,
             q.sort_order,
             q.question_number,
             q.table_number,
@@ -81,7 +80,7 @@ def prepare_excel_download(survey_doc) -> bytes:
         for cell in row:
             cell.alignment = Alignment(wrap_text=True, vertical='top')
 
-    col_widths = [20, 12, 15, 12, 50, 35, 20, 12, 25, 30, 12, 35, 40, 30, 25, 20, 25, 35]
+    col_widths = [12, 15, 12, 50, 35, 20, 12, 25, 30, 12, 35, 40, 30, 25, 20, 25]
     for i, width in enumerate(col_widths, 1):
         ws_main.column_dimensions[get_column_letter(i)].width = width
 

@@ -122,8 +122,7 @@ class SurveyQuestion:
     table_number: str = ""
     table_title: str = ""
     grammar_checked: str = ""
-    # Phase 2: Base & Net/Recode
-    base: str = ""
+    # Phase 2: Net/Recode
     net_recode: str = ""
     # Phase 3: Sort & SubBanner & Banner
     sort_order: str = ""
@@ -170,7 +169,6 @@ class SurveyQuestion:
             "SummaryType": self.summary_type,
             "TableTitle": self.table_title,
             "GrammarChecker": self.grammar_checked,
-            "Base": self.base,
             "NetRecode": self.net_recode,
             "Sort": self.sort_order,
             "SubBanner": self.sub_banner,
@@ -198,7 +196,6 @@ class SurveyQuestion:
             "table_number": self.table_number,
             "table_title": self.table_title,
             "grammar_checked": self.grammar_checked,
-            "base": self.base,
             "net_recode": self.net_recode,
             "sort_order": self.sort_order,
             "sub_banner": self.sub_banner,
@@ -233,7 +230,6 @@ class SurveyQuestion:
             table_number=d.get("table_number", ""),
             table_title=d.get("table_title", ""),
             grammar_checked=d.get("grammar_checked", ""),
-            base=d.get("base", ""),
             net_recode=d.get("net_recode", ""),
             sort_order=d.get("sort_order", ""),
             sub_banner=d.get("sub_banner", ""),
@@ -288,7 +284,7 @@ class SurveyDocument:
                 "QuestionNumber", "TableNumber", "QuestionText", "QuestionType",
                 "AnswerOptions", "SkipLogic", "Filter",
                 "Instructions", "SummaryType", "TableTitle", "GrammarChecker",
-                "Base", "NetRecode", "Sort", "SubBanner", "BannerIDs",
+                "NetRecode", "Sort", "SubBanner", "BannerIDs",
                 "SpecialInstructions", "Role", "VariableType",
             ])
         return pd.DataFrame([q.to_dict() for q in self.questions])
