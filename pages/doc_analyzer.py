@@ -507,12 +507,9 @@ def _render_intelligence_summary(doc: SurveyDocument):
 
 
 def _display_docx_results(survey_doc: SurveyDocument):
-    """추출 결과를 트리뷰와 스프레드시트 탭으로 표시"""
-    tab_tree, tab_sheet = st.tabs(["Tree View", "Spreadsheet"])
+    """추출 결과를 스프레드시트(기본) + 트리뷰(접힘)로 표시"""
+    edited_df = render_spreadsheet_view(survey_doc)
+    st.session_state['edited_df'] = edited_df
 
-    with tab_tree:
+    with st.expander("Tree View (detailed question cards)", expanded=False):
         render_tree_view(survey_doc)
-
-    with tab_sheet:
-        edited_df = render_spreadsheet_view(survey_doc)
-        st.session_state['edited_df'] = edited_df
