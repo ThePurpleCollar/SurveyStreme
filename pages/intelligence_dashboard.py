@@ -154,7 +154,7 @@ def _render_section_flow(questions: List[SurveyQuestion]) -> None:
     st.subheader("Survey Structure Flow")
 
     # role 필드가 있는 문항만 처리
-    roles = [getattr(q, "role", "") for q in questions if getattr(q, "role", "")]
+    roles = [q.role for q in questions if q.role]
     if not roles:
         st.caption("No role metadata available. Run Questionnaire Analyzer with enrichment first.")
         return
@@ -239,8 +239,8 @@ def _render_role_distribution(questions: List[SurveyQuestion]) -> None:
     """Phase 5 role & variable_type 분포."""
     st.subheader("Role & Variable Type Distribution")
 
-    roles = [getattr(q, "role", "") for q in questions if getattr(q, "role", "")]
-    var_types = [getattr(q, "variable_type", "") for q in questions if getattr(q, "variable_type", "")]
+    roles = [q.role for q in questions if q.role]
+    var_types = [q.variable_type for q in questions if q.variable_type]
 
     if not roles and not var_types:
         st.caption("No enrichment metadata available. Run Questionnaire Analyzer with enrichment first.")
@@ -320,7 +320,7 @@ def _render_analytical_readiness(doc: SurveyDocument, questions: List[SurveyQues
     composite_count = sum(1 for b in doc.banners if b.banner_type == "composite")
     composite_ratio = (composite_count / banner_count * 100) if banner_count > 0 else 0
 
-    high_value = sum(1 for q in questions if getattr(q, "analytical_value", "") == "high")
+    high_value = sum(1 for q in questions if q.analytical_value == "high")
     high_ratio = (high_value / len(questions) * 100) if questions else 0
 
     col1, col2, col3, col4 = st.columns(4)

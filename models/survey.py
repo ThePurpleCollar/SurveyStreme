@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import ClassVar, List, Optional
 import json
 import pandas as pd
 
@@ -136,6 +136,15 @@ class SurveyQuestion:
     variable_type: str = ""     # "demographic" | "behavioral" | "attitudinal" | "brand" | ""
     analytical_value: str = ""  # "high" | "medium" | "low" | ""
     section: str = ""           # 조사 흐름상 섹션명
+
+    # Stale session fallback: Streamlit 핫리로드 시 구 객체에 신규 필드가 없을 때
+    # AttributeError 대신 해당 필드의 기본값 반환
+    _FIELD_DEFAULTS: ClassVar[dict] = {}  # populated after class definition
+
+    def __getattr__(self, name: str):
+        if name in self._FIELD_DEFAULTS:
+            return self._FIELD_DEFAULTS[name]
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def answer_options_display(self) -> str:
         """응답 보기를 여러 줄 문자열로 반환 (Excel용)"""
@@ -277,6 +286,13 @@ class SurveyDocument:
     research_objectives: List[str] = field(default_factory=list)
     survey_intelligence: dict = field(default_factory=dict)
 
+    _FIELD_DEFAULTS: ClassVar[dict] = {}  # populated after class definition
+
+    def __getattr__(self, name: str):
+        if name in self._FIELD_DEFAULTS:
+            return self._FIELD_DEFAULTS[name]
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
     def to_dataframe(self) -> pd.DataFrame:
         """기존 edited_df와 호환되는 DataFrame 생성"""
         if not self.questions:
@@ -326,3 +342,23 @@ class SurveyDocument:
             research_objectives=d.get("research_objectives", []),
             survey_intelligence=d.get("survey_intelligence", {}),
         )
+
+
+# ── Stale session fallback defaults ──
+# dataclass fields → default 매핑. __getattr__에서 구 객체 호환용으로 사용.
+def _build_field_defaults(cls) -> dict:
+    """dataclass 필드 중 default가 있는 항목만 {name: default} 딕셔너리로 반환."""
+    from dataclasses import fields as dc_fields, MISSING
+    defaults = {}
+    for f in dc_fields(cls):
+        if f.name.startswith("_"):
+            continue
+        if f.default is not MISSING:
+            defaults[f.name] = f.default
+        elif f.default_factory is not MISSING:
+            defaults[f.name] = f.default_factory()
+    return defaults
+
+
+SurveyQuestion._FIELD_DEFAULTS = _build_field_defaults(SurveyQuestion)
+SurveyDocument._FIELD_DEFAULTS = _build_field_defaults(SurveyDocument)
