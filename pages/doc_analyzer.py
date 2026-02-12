@@ -511,5 +511,6 @@ def _display_docx_results(survey_doc: SurveyDocument):
     edited_df = render_spreadsheet_view(survey_doc)
     st.session_state['edited_df'] = edited_df
 
-    with st.expander("Tree View (detailed question cards)", expanded=False):
+    if st.checkbox("Show Tree View (detailed question cards)", value=False,
+                    key="show_tree_view"):
         render_tree_view(survey_doc)
