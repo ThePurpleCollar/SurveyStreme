@@ -1,5 +1,5 @@
 [project]
-name = "questvoyager"
+name = "surveystreme"
 version = "0.1.0"
 description = "Survey questionnaire analysis platform with LLM-powered extraction and Table Guide generation"
 authors = [
@@ -16,12 +16,8 @@ dependencies = [
     "openai (>=1.70.0,<2.0.0)",
     "python-dotenv (>=1.1.0,<2.0.0)",
     "openpyxl (>=3.1.5,<4.0.0)",
-    "google-cloud-aiplatform (>=1.38.0,<2.0.0)",
+    "google-cloud-aiplatform (>=1.38.0,<2.0.0)"
 ]
-
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
