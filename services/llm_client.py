@@ -13,13 +13,13 @@ LITELLM_API_KEY = os.getenv("LITELLM_API_KEY")
 LITELLM_BASE_URL = "https://ipsos.litellm-prod.ai"
 
 # ── 기능별 고정 모델 ──
-MODEL_DOC_ANALYZER = "gemini-2.5-pro"          # Questionnaire Analyzer (Gemini 유지)
-MODEL_TITLE_GENERATOR = "gpt-5"                # Table Guide Builder
-MODEL_GRAMMAR_CHECKER = "gpt-5"                # Grammar Checker
-MODEL_QUALITY_CHECKER = "gpt-5"                # Quality Checker
-MODEL_LENGTH_ESTIMATOR = "gpt-4.1-mini"        # Length Estimator
-MODEL_CHECKLIST_GENERATOR = "gpt-4.1-mini"     # Checklist Generator
-DEFAULT_MODEL = "gpt-4.1-mini"
+MODEL_DOC_ANALYZER = "gemini-2.5-pro"      # Questionnaire Analyzer (복잡한 구조 파싱)
+MODEL_TITLE_GENERATOR = "gemini-2.5-pro"   # Table Guide Builder (배너 설계)
+MODEL_GRAMMAR_CHECKER = "gemini-2.5-flash"     # Grammar Checker (패턴 기반 교정)
+MODEL_QUALITY_CHECKER = "gpt-5"                # Quality Checker (분석적 추론)
+MODEL_LENGTH_ESTIMATOR = "gemini-2.5-flash"    # Length Estimator (경량 추정)
+MODEL_CHECKLIST_GENERATOR = "gemini-2.5-flash" # Checklist Generator (속도 우선)
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 _GEMINI_INITIALIZED = False
 _openai_client = None
@@ -110,7 +110,7 @@ def init_client():
 
 def call_llm(prompt: str, model: str = DEFAULT_MODEL, *,
              temperature: float = 0.2, top_p: float = 0.8,
-             max_tokens: int = 8192) -> str:
+             max_tokens: int = 16384) -> str:
     """통합 LLM 호출 — Gemini는 Vertex AI, GPT는 OpenAI SDK 경유.
 
     Args:
@@ -158,7 +158,7 @@ def call_llm(prompt: str, model: str = DEFAULT_MODEL, *,
 
 def call_llm_json(system_prompt: str, user_prompt: str, model: str = DEFAULT_MODEL, *,
                   temperature: float = 0.2, top_p: float = 0.8,
-                  max_tokens: int = 8192) -> dict:
+                  max_tokens: int = 16384) -> dict:
     """통합 JSON 구조화 LLM 호출 — Gemini는 Vertex AI, GPT는 OpenAI SDK 경유.
 
     Args:
