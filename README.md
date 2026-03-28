@@ -1,4 +1,4 @@
-# QuestVoyager (Survey Stream)
+# Survey Stream
 
 Streamlit-based survey questionnaire analysis platform for automated question extraction, Table Guide generation, and quality assurance.
 
