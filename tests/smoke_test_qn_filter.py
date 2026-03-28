@@ -103,28 +103,28 @@ assert valid("SECTION1") is False
 print("Blacklist tests passed!")
 
 
-# ── 휴리스틱: 알 수 없는 접두어 ──
-# Long prefix (>5 chars) → rejected
-assert valid("RegionCode2") is False
-assert valid("SegCode15") is False
-assert valid("CategoryCode1") is False
-assert valid("BrandCode1") is False
+# ── 휴리스틱: camelCase 변수명 (>7자 + camelCase만 거부) ──
+# 긴 camelCase (>7자 접두어 + camelCase) → rejected
+assert valid("RegionCode2") is False    # RegionCode=10자 + camelCase
+assert valid("CategoryCode1") is False  # CategoryCode=12자 + camelCase
+assert valid("BrandCode1") is False     # BrandCode=9자 + camelCase
 
-# camelCase → rejected
-assert valid("RegCode2") is False  # camelCase + would be caught by >5 too
-assert valid("myVar1") is False    # camelCase
+# 짧은 접두어 → LLM 신뢰 정책에 따라 허용
+assert valid("SegCode15") is True       # SegCode=7자 → 임계값 이하
+assert valid("RegCode2") is True        # RegCode=7자 → 임계값 이하
+assert valid("myVar1") is True          # myVar=5자 → 임계값 이하
 
-# Short unknown prefix → accepted (benefit of the doubt)
+# Short unknown prefix → accepted
 assert valid("X1") is True
 assert valid("R1") is True
 assert valid("NEW1") is True
 assert valid("NET1") is True
-assert valid("BASE1") is True  # 4 chars, no camelCase, not blacklisted
+assert valid("BASE1") is True
 
 # Edge cases
 assert valid("") is False          # empty
-assert valid("123") is False       # no alpha prefix
-assert valid("Q") is True          # valid prefix (full format validation is done by regex patterns)
+assert valid("123") is True        # 숫자만 → LLM 신뢰 정책에 따라 허용
+assert valid("Q") is True          # 유효한 접두어
 
 print("Heuristic tests passed!")
 

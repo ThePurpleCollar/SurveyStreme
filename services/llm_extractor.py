@@ -94,35 +94,25 @@ _NON_QUESTION_PREFIXES = {
 
 
 def _is_valid_question_number(qn: str) -> bool:
-    """문항번호가 실제 설문 문항인지 검증 (화이트/블랙리스트 + 휴리스틱).
+    """문항번호 유효성 검증 — 블랙리스트만 적용하는 느슨한 검증.
 
-    검증 순서:
-    1. 화이트리스트: 알려진 유효 접두어 → 항상 허용
-    2. 블랙리스트: 알려진 비문항 접두어 → 항상 거부
-    3. 휴리스틱: 긴 접두어(>5자) 또는 camelCase → 거부
-    4. 기타: 허용 (짧은 알 수 없는 접두어는 통과)
+    LLM이 식별한 문항번호를 최대한 존중한다.
+    영문자 접두어를 강제하지 않으며, 숫자 단독(1.), 한글(문항1) 등도 허용.
+    오직 명백한 비문항 키워드(STEP, PAGE, NOTE 등)만 거부한다.
     """
+    if not qn:
+        return False
+
+    # 블랙리스트: 명백한 비문항 접두어만 거부
     prefix_match = re.match(r'^[A-Za-z]+', qn)
-    if not prefix_match:
-        return False
-    alpha = prefix_match.group()
-    upper_alpha = alpha.upper()
-
-    # 1) 화이트리스트: 알려진 유효 접두어
-    if upper_alpha in _VALID_QN_PREFIXES:
-        return True
-
-    # 2) 블랙리스트: 알려진 비문항 접두어 (대소문자 무시)
-    if upper_alpha in _NON_QUESTION_PREFIXES:
-        return False
-
-    # 3) 접두어 5자 초과 → 변수명일 가능성 (RegionCode, SegCode 등)
-    if len(alpha) > 5:
-        return False
-
-    # 4) camelCase 감지 (소문자→대문자: RegionCode, SegCode)
-    if re.search(r'[a-z][A-Z]', alpha):
-        return False
+    if prefix_match:
+        upper_alpha = prefix_match.group().upper()
+        if upper_alpha in _NON_QUESTION_PREFIXES:
+            return False
+        # camelCase 변수명 패턴 (RegionCode, SegCode 등)만 거부
+        alpha = prefix_match.group()
+        if len(alpha) > 7 and re.search(r'[a-z][A-Z]', alpha):
+            return False
 
     return True
 
@@ -189,15 +179,26 @@ def _try_match_question(line: str):
     return None
 
 
-def regex_pre_extract(annotated_text: str) -> List[dict]:
-    """정규식으로 문항번호와 유형을 빠르게 사전 추출.
+# 느슨한 밀도 추정용 패턴 — 영어/숫자/한글 모두 허용
+_DENSITY_PATTERN = re.compile(
+    r'^\s*(?:\*\*)?'
+    r'([A-Za-z0-9가-힣]+[A-Za-z0-9가-힣\-]*)'  # 영어, 숫자, 한글, 하이픈
+    r'[.)\]:\s]',
+    re.MULTILINE,
+)
 
-    패턴 A: Q1. question text (마침표/괄호/콜론)
-    패턴 B: Q2 [S] question text (공백+대괄호)
-    패턴 C: [SC2. SENSITIVE INDUSTRY (MA)] (대괄호 헤더)
+
+def regex_pre_extract(annotated_text: str) -> List[dict]:
+    """느슨한 정규식으로 문항 수 밀도를 추정.
+
+    이 함수의 목적은 오직 '재청킹(Rechunking)을 위한 대략적 문항 수 추정'이다.
+    정확한 추출은 LLM에 전적으로 위임하므로, 여기서는 과소 추정보다 과대 추정이 낫다.
+
+    기존 패턴 A/B/C도 유지하되, 추가로 느슨한 패턴을 적용하여
+    숫자 시작(1.), 한글 시작(문항1) 등도 카운트한다.
 
     Returns:
-        [{"question_number": "Q1", "question_text": "...", "question_type": "SA"}, ...]
+        [{"question_number": "Q1", "question_text": "...", "question_type": None}, ...]
     """
     results = []
     lines = annotated_text.split('\n')
@@ -207,11 +208,26 @@ def regex_pre_extract(annotated_text: str) -> List[dict]:
     current_type = None
 
     for line in lines:
+        # 기존 패턴 우선 시도
         matched = _try_match_question(line)
+
+        # 기존 패턴 실패 시 느슨한 패턴 폴백
+        if not matched:
+            stripped = line.strip()
+            if stripped:
+                m = _DENSITY_PATTERN.match(stripped)
+                if m:
+                    # 목록 항목, 들여쓰기된 텍스트, 테이블 행은 제외
+                    if not (stripped.startswith('#.') or stripped.startswith('- ')
+                            or stripped.startswith('|') or stripped.startswith('===')):
+                        matched = (m.group(1), stripped[m.end():].strip(), None)
+
         if matched:
-            # 이전 문항 저장
             if current_qn:
-                cleaned, qtype = _extract_type_from_text(current_text)
+                try:
+                    cleaned, qtype = _extract_type_from_text(current_text)
+                except Exception:
+                    cleaned, qtype = current_text, None
                 results.append({
                     "question_number": current_qn,
                     "question_text": cleaned.strip(),
@@ -219,10 +235,8 @@ def regex_pre_extract(annotated_text: str) -> List[dict]:
                 })
             current_qn, current_text, current_type = matched
         elif current_qn:
-            # 문항 텍스트 이어붙이기 (목록 항목이나 빈 줄이 아닌 경우)
             stripped = line.strip()
             if stripped and not stripped.startswith('===') and not stripped.startswith('|'):
-                # 목록 항목이면 문항 텍스트에 추가하지 않음 (보기일 가능성)
                 if stripped.startswith('#.') or stripped.startswith('- ') or stripped.startswith('  '):
                     pass
                 else:
@@ -230,7 +244,10 @@ def regex_pre_extract(annotated_text: str) -> List[dict]:
 
     # 마지막 문항
     if current_qn:
-        cleaned, qtype = _extract_type_from_text(current_text)
+        try:
+            cleaned, qtype = _extract_type_from_text(current_text)
+        except Exception:
+            cleaned, qtype = current_text, None
         results.append({
             "question_number": current_qn,
             "question_text": cleaned.strip(),
@@ -246,70 +263,41 @@ def regex_pre_extract(annotated_text: str) -> List[dict]:
 
 SYSTEM_PROMPT = """You are a professional survey questionnaire analyst. You extract ALL questions from survey questionnaire documents into structured JSON.
 
-Survey questionnaires use many different formatting conventions. You MUST recognize ALL of these:
+## WHAT IS A SURVEY QUESTION?
 
-FORMAT A - Standard numbered:
-  "Q1. What is your gender?" or "Q1) What is your gender? [SA]"
-  The question number ends with a period, closing parenthesis, or colon.
+A survey question is any text that asks a respondent for input. It consists of:
+1. **Question stem** — the text asking for a response
+2. **Answer options** — the choices or input fields (may be a list, table, scale, or open-ended)
+3. **Question identifier** — a number, code, or label that uniquely identifies the question
 
-FORMAT B - Bold header with label:
-  "**SQ1.\t[Gender]**"
-  "[SA]"
-  "What is your gender?"
-  The question number is bold. The label is in brackets. The type and question text may be on subsequent lines.
+CRITICAL RULES on identifiers:
+- Identifiers can take ANY form: "Q1", "1.", "문항1", "SQ2a", "SC_3", or even no explicit number at all.
+- Do NOT restrict identifiers to English-letter prefixes. Numbers only ("1.", "2."), Korean ("문항1"), or mixed formats are all valid.
+- If a question has NO explicit identifier, generate one yourself using the section name or a descriptive keyword (e.g., "SectionA_Q1", "BrandAwareness"). Generated IDs must be unique within the document.
 
-FORMAT C - Bracket header:
-  "[SC2. SENSITIVE INDUSTRY (MA)]"
-  "[PN: ASK ALL]"
-  "Do you or any of your family members work in..."
-  | 1 | Advertising |
-  | 2 | Market research |
-  The entire header is in square brackets. (MA)/(SA) at the end indicates the type. The answer options may follow as a table.
+## WHAT IS NOT A QUESTION?
 
-FORMAT D - Space-bracket type:
-  "Q2 [S]" or "QPID100 [S]" or "BVT11 [MA]"
-  No period after the number. The type is in brackets after a space.
+Do NOT extract these items:
+- Plain instructions or introductions ("Welcome to this survey", "다음은 브랜드에 관한 질문입니다")
+- Interviewer directives (SHOW CARD, ROTATE) — these go into the `instructions` field of the associated question
+- Programmer notes ([PN: ASK IF ...]) — these go into `filter` or `skip_logic` of the associated question
+- Variable/coding declarations (RegionCode, SegCode, BrandCode) — data processing metadata
+- Process steps (STEP1, STEP2, GOTO, SKIP) — routing instructions
+- Section markers, page breaks, quota tables
 
-FORMAT E - No number (section-based):
-  Section headings serve as groupings. Questions may appear as plain text with answer tables below them.
-  If a question has no explicit number, use the section name or nearby context to assign an identifier.
+## GRID/MATRIX QUESTIONS
 
-FORMAT F - Matrix/Grid:
-  Multiple items rated on a common scale or answer set. Appears in several layouts:
+Multiple items rated on a common scale or sharing the same answer set:
+- **Grid (scale)**: Items as rows, scale points (1-5, 1-7, etc.) as columns → type: "Npt x M" (N=scale, M=items)
+- **Matrix (non-scale)**: Items as rows, categorical answers as columns → type: "MATRIX"
+- Extract row items as `sub_items`, scale columns as `answer_options`
 
-  Variant 1 — Table with scale columns:
-    Q5. Rate each brand on these attributes. [5pt x 3]
-    |                 | 1-Very Poor | 2 | 3-Average | 4 | 5-Very Good |
-    | Brand awareness | O           | O | O         | O | O           |
-    | Product quality | O           | O | O         | O | O           |
-    | Value for money | O           | O | O         | O | O           |
-    → type: "5pt x 3" (5-point scale applied to 3 items)
+## TABLE RECOGNITION
 
-  Variant 2 — Stem + lettered sub-items sharing a scale:
-    Q6. How much do you agree with each statement? (7pt x 4)
-    1=Strongly disagree ... 7=Strongly agree
-    a) I trust this brand
-    b) I would recommend it
-    c) I am satisfied
-    d) It offers good value
-    → type: "7pt x 4" (7-point scale, 4 items)
-
-  Variant 3 — Non-scale matrix (shared categorical options):
-    Q7. For each brand, indicate your relationship. [MATRIX]
-    |         | Purchased | Considered | Aware | Never heard of |
-    | Brand A | □         | □          | □     | □              |
-    | Brand B | □         | □          | □     | □              |
-    → type: "MATRIX" (columns are categories, not numbered scale points)
-
-  How to classify:
-  - Rows = items, columns = numbered scale points (1–N) → "Npt x M"
-  - Rows = items, columns = non-numeric categories → "MATRIX"
-  - N = scale range (count endpoints), M = number of item rows
-
-TABLE RECOGNITION — how to distinguish table types:
-  - 2-column table (code + label) → answer option list for the preceding question
-  - Multi-column table with numbered headers (1, 2, 3...) and item rows → grid/matrix scale
-  - Multi-column table with category headers and item rows → non-scale matrix
+Tables in the document serve different purposes — identify by content:
+- 2-column (code + label) → answer options for the preceding question
+- Multi-column with numbered headers → grid/scale battery
+- Multi-column with text headers → non-scale matrix
 
 SKIP LOGIC — EXTRACTION RULES:
 Extract routing/branching instructions as {condition, target} pairs.
@@ -690,16 +678,28 @@ def _extract_json_from_text(text: str) -> Optional[dict]:
 
 
 def _validate_question(q: dict) -> Optional[dict]:
-    """추출된 문항 유효성 검증 및 정규화"""
+    """추출된 문항 유효성 검증 및 정규화.
+
+    LLM이 반환한 결과를 최대한 존중한다.
+    question_text가 존재하면 유효한 문항으로 취급.
+    question_number 형태(숫자, 한글, 생성된 ID)와 무관하게 통과.
+    오직 명백한 비문항 키워드(STEP, PAGE 등)만 거부.
+    """
     if not isinstance(q, dict):
         return None
 
     qn = str(q.get("question_number", "")).strip()
     qt = str(q.get("question_text", "")).strip()
-    if not qn or not qt:
+
+    # question_text가 없으면 문항이 아님
+    if not qt:
         return None
 
-    # Layer 3 안전망: LLM이 비문항 항목을 추출했을 때 걸러냄
+    # question_number가 비어있으면 LLM이 생성하지 못한 것 → 텍스트 기반 임시 ID
+    if not qn:
+        qn = f"_AUTO_{hash(qt) % 10000:04d}"
+
+    # 블랙리스트만 적용 — 명백한 비문항만 거부
     if not _is_valid_question_number(qn):
         logger.debug(f"Rejected non-question identifier: {qn}")
         return None
@@ -734,6 +734,8 @@ def _validate_question(q: dict) -> Optional[dict]:
         "skip_logic": normalized_logic,
         "filter": q.get("filter") or None,
         "instructions": q.get("instructions") or None,
+        "sub_items": q.get("sub_items", []),
+        "programming_guide": q.get("programming_guide"),
     }
 
 
@@ -997,9 +999,35 @@ def extract_questions_from_chunk(
 # 결과 병합
 # ──────────────────────────────────────────────────────────────────────
 
+def _text_similarity(a: str, b: str) -> float:
+    """두 문자열의 간이 유사도 (0.0~1.0). 토큰 기반 Jaccard."""
+    if not a or not b:
+        return 0.0
+    tokens_a = set(a.lower().split())
+    tokens_b = set(b.lower().split())
+    if not tokens_a or not tokens_b:
+        return 0.0
+    return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+
+
+def _options_identical(opts_a: list, opts_b: list) -> bool:
+    """두 보기 리스트의 label이 동일한지 비교."""
+    labels_a = {opt.get("label", "") for opt in opts_a if isinstance(opt, dict)}
+    labels_b = {opt.get("label", "") for opt in opts_b if isinstance(opt, dict)}
+    if not labels_a and not labels_b:
+        return True
+    return labels_a == labels_b
+
+
 def merge_chunk_results(chunk_results: List[List[dict]]) -> List[dict]:
-    """여러 청크 결과를 병합하고 중복 제거"""
-    seen = {}
+    """여러 청크 결과를 병합하고 중복 제거.
+
+    동일 question_number라도 question_text 유사도가 낮거나
+    answer_options가 완전히 다르면 서로 다른 문항으로 보존한다.
+    이는 LLM이 번호 없는 문항에 동일한 임시 ID를 부여했을 때
+    서로 다른 문항이 덮어씌워지는 것을 방지한다.
+    """
+    seen = {}      # qn → dict (기존과 동일)
     merged = []
 
     for chunk_questions in chunk_results:
@@ -1007,26 +1035,47 @@ def merge_chunk_results(chunk_results: List[List[dict]]) -> List[dict]:
             continue
         for q in chunk_questions:
             qn = q["question_number"]
+
             if qn in seen:
                 existing = seen[qn]
-                if len(q.get("question_text", "")) > len(existing.get("question_text", "")):
-                    existing["question_text"] = q["question_text"]
+                text_sim = _text_similarity(
+                    existing.get("question_text", ""),
+                    q.get("question_text", ""),
+                )
+                opts_same = _options_identical(
+                    existing.get("answer_options", []),
+                    q.get("answer_options", []),
+                )
 
-                existing_codes = {opt["code"] for opt in existing.get("answer_options", [])}
-                for opt in q.get("answer_options", []):
-                    if opt["code"] not in existing_codes:
-                        existing["answer_options"].append(opt)
-                        existing_codes.add(opt["code"])
+                # 유사도가 높으면 동일 문항 → 기존 방식으로 보강
+                if text_sim > 0.3 or opts_same:
+                    if len(q.get("question_text", "")) > len(existing.get("question_text", "")):
+                        existing["question_text"] = q["question_text"]
 
-                existing_conditions = {sl["condition"] for sl in existing.get("skip_logic", [])}
-                for sl in q.get("skip_logic", []):
-                    if sl["condition"] not in existing_conditions:
-                        existing["skip_logic"].append(sl)
-                        existing_conditions.add(sl["condition"])
+                    existing_codes = {opt["code"] for opt in existing.get("answer_options", [])}
+                    for opt in q.get("answer_options", []):
+                        if opt["code"] not in existing_codes:
+                            existing["answer_options"].append(opt)
+                            existing_codes.add(opt["code"])
 
-                for field in ("filter", "instructions", "question_type"):
-                    if not existing.get(field) and q.get(field):
-                        existing[field] = q[field]
+                    existing_conditions = {sl["condition"] for sl in existing.get("skip_logic", [])}
+                    for sl in q.get("skip_logic", []):
+                        if sl["condition"] not in existing_conditions:
+                            existing["skip_logic"].append(sl)
+                            existing_conditions.add(sl["condition"])
+
+                    for field in ("filter", "instructions", "question_type",
+                                  "sub_items", "programming_guide"):
+                        if not existing.get(field) and q.get(field):
+                            existing[field] = q[field]
+                else:
+                    # 유사도 낮음 → 서로 다른 문항, 번호 충돌 해소
+                    new_qn = f"{qn}_dup{len(merged)}"
+                    q["question_number"] = new_qn
+                    seen[new_qn] = q
+                    merged.append(q)
+                    logger.info(f"Merge: duplicate ID '{qn}' resolved as '{new_qn}' "
+                                f"(text_sim={text_sim:.2f})")
             else:
                 seen[qn] = q
                 merged.append(q)
