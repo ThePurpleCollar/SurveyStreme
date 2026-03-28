@@ -11,26 +11,40 @@ from models.survey import SurveyDocument, SurveyQuestion
 
 def build_survey_context(doc: SurveyDocument,
                          questions: Optional[List[SurveyQuestion]] = None,
-                         df=None) -> str:
+                         df=None,
+                         confirmed_brief: Optional[dict] = None) -> str:
     """설문지 전체 맥락 요약 — 모든 LLM 프롬프트에 주입.
 
     Args:
         doc: SurveyDocument (client_brand, study_objective, survey_intelligence 등 포함).
         questions: 문항 리스트 오버라이드 (없으면 doc.questions 사용).
         df: DataFrame 폴백 (questions 없을 때).
+        confirmed_brief: 사용자 확정 Study Brief dict (있으면 최우선 적용).
     """
     lines = []
-    client_brand = doc.client_brand
-    study_objective = doc.study_objective
+
+    # ── 확정된 Study Brief가 있으면 최우선 사용 ──
+    brief = confirmed_brief or {}
+    client_brand = brief.get("client_brand") or doc.client_brand
+    study_objective = brief.get("study_objective") or doc.study_objective
     intelligence = doc.survey_intelligence
 
-    # ── 사용자 입력 (최우선 정보) ──
-    if client_brand or study_objective:
+    if client_brand or study_objective or brief:
         lines.append("## Study Brief")
         if client_brand:
             lines.append(f"Client Brand: {client_brand}")
+        if brief.get("study_type"):
+            lines.append(f"Study Type: {brief['study_type']}")
         if study_objective:
             lines.append(f"Study Objective: {study_objective}")
+        if brief.get("research_objectives"):
+            lines.append("Research Objectives:")
+            for i, obj in enumerate(brief["research_objectives"], 1):
+                lines.append(f"  {i}. {obj}")
+        if brief.get("key_segment_names"):
+            lines.append(f"Key Segments: {', '.join(brief['key_segment_names'])}")
+        if brief.get("target_sample"):
+            lines.append(f"Target Sample: n={brief['target_sample']}")
         lines.append("")
 
     # ── Survey Intelligence 섹션 ──

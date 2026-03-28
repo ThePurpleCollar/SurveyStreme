@@ -2,13 +2,13 @@ import os
 import time
 
 import streamlit as st
-from services.pdf_parser import read_pdf
 from services.llm_client import MODEL_DOC_ANALYZER
 from services.postprocessor import apply_postprocessing
 from services.docx_parser import parse_docx
 from services.docx_renderer import render_sections_to_annotated_text
-from services.chunker import chunk_sections, chunk_text
+from services.chunker import chunk_sections
 from services.llm_extractor import extract_survey_questions
+from services.coverage_checker import check_extraction_coverage
 from models.survey import SurveyDocument, SurveyQuestion
 from services.table_guide_service import analyze_survey_intelligence
 from services.survey_context import enrich_document
@@ -22,236 +22,30 @@ def page_document_processing(uploaded_file, client):
     # 세션 로드 결과가 있으면 파일 업로드 없이도 즉시 표시
     if uploaded_file is None and 'survey_document' in st.session_state:
         doc = st.session_state['survey_document']
-        st.success(f"Loaded from session: **{doc.filename}** — {len(doc.questions)} questions", icon="✅")
-        st.caption("💡 This session was loaded from a saved file. You can proceed to other tools.")
+        st.success(f"세션 복원 완료: **{doc.filename}** — {len(doc.questions)}개 문항", icon="✅")
+        st.caption("💡 저장된 세션 파일에서 불러왔습니다. 다른 도구로 바로 진행할 수 있습니다.")
         _render_intelligence_summary(doc)
         _display_docx_results(doc)
         return
 
     if uploaded_file is not None:
-        st.success("Here are the results from extracting question numbers, questions, and question types from the uploaded file.", icon="✅")
+        st.success("업로드된 파일에서 문항 번호, 문항 텍스트, 문항 유형을 추출합니다.", icon="✅")
     else:
-        st.info('Please upload your questionnaire on the sidebar.', icon="ℹ️")
+        st.info('사이드바에서 설문지 파일을 업로드해주세요.', icon="ℹ️")
         return
 
     if uploaded_file is not None:
-        if uploaded_file.name.endswith('.pdf'):
-            _process_pdf(uploaded_file, client)
-        elif uploaded_file.name.endswith('.docx'):
+        if uploaded_file.name.endswith('.docx'):
             _process_docx(uploaded_file, client)
         else:
-            st.error("Unsupported file type. Please upload a .pdf or .docx file.")
-
-
-def _process_pdf(uploaded_file, client):
-    """PDF AI 추출 파이프라인 (DOCX와 동일한 LLM 경로)"""
-
-    # ── Study Brief (optional) ──
-    with st.expander("Study Brief (optional — improves enrichment quality)", expanded=False):
-        brief_col1, brief_col2 = st.columns(2)
-        with brief_col1:
-            client_brand = st.text_input(
-                "Client Brand",
-                value=st.session_state.get("study_client_brand", ""),
-                placeholder="e.g. Hyundai, Samsung, LG",
-                help="The brand commissioning the study.",
-                key="pdf_study_client_brand_input",
-            )
-            st.session_state["study_client_brand"] = client_brand
-        with brief_col2:
-            study_objective = st.text_input(
-                "Study Objective",
-                value=st.session_state.get("study_objective", ""),
-                placeholder="e.g. Brand health tracking, Customer satisfaction",
-                help="Research purpose.",
-                key="pdf_study_objective_input",
-            )
-            st.session_state["study_objective"] = study_objective
-
-    # 추출 버튼
-    extract_button = st.button('Extract Questions with AI', key='extract_pdf_button', use_container_width=True)
-
-    # 이전 결과가 있으면 표시
-    if 'survey_document' in st.session_state and not extract_button:
-        _display_docx_results(st.session_state['survey_document'])
-        return
-
-    if not extract_button:
-        st.info("Click 'Extract Questions with AI' to start AI-powered PDF analysis.", icon="🤖")
-        return
-
-    # ── 추출 파이프라인 시작 ──
-    model = MODEL_DOC_ANALYZER
-
-    with st.status("Phase 1/5: Parsing PDF...", expanded=True) as status:
-        # Phase 1: PDF 파싱
-        status.write("Extracting text from PDF pages...")
-        texts = read_pdf(uploaded_file)
-
-        if not texts:
-            status.update(label="Failed to extract text from PDF.", state="error")
-            st.warning("Could not extract text from PDF.")
-            return
-
-        total_pages = len(texts)
-        total_chars = sum(len(t) for t in texts)
-        status.write(f"Parsed: {total_pages} pages, {total_chars:,} characters")
-
-        # 텍스트 청킹
-        chunks = chunk_text(texts)
-        status.write(f"Split into {len(chunks)} chunk(s) for AI processing")
-
-        # Phase 3 준비: LLM 추출
-        progress_bar = status.progress(0.0)
-        stats_line = status.empty()
-
-        start_time = time.time()
-        chunks_done = [0]
-        total_questions_found = [0]
-
-        def on_progress(event, data):
-            elapsed = time.time() - start_time
-
-            if event == "regex_done":
-                status.update(label="Phase 2/5: Scanning for question patterns...")
-                status.write(f"Quick scan found ~{data['total_hints']} potential questions")
-
-            elif event == "rechunk":
-                status.write(
-                    f"Adaptive split: {data['original_chunks']} -> "
-                    f"{data['new_chunks']} chunks ({data['reason']})"
-                )
-
-            elif event == "chunk_start":
-                total = data['total_chunks']
-                status.update(
-                    label=f"Phase 3/5: Extracting questions with AI... "
-                          f"(Chunk {chunks_done[0]}/{total} done)"
-                )
-                frac = max(chunks_done[0] / total, 0.0)
-                progress_bar.progress(frac)
-
-            elif event == "chunk_done":
-                chunks_done[0] += 1
-                extracted = data['questions_extracted']
-                total_questions_found[0] += extracted
-                done = chunks_done[0]
-                total = data['total_chunks']
-                progress_bar.progress(done / total)
-
-                e_m, e_s = divmod(int(elapsed), 60)
-                status.write(
-                    f"Chunk {data['chunk_index'] + 1}/{total}: "
-                    f"{extracted} questions ({e_m}:{e_s:02d})"
-                )
-
-                status.update(
-                    label=f"Phase 3/5: Extracting questions with AI... "
-                          f"(Chunk {done}/{total} done)"
-                )
-
-                remaining = (elapsed / done * (total - done)) if done > 0 else 0
-                remain_m, remain_s = divmod(int(remaining), 60)
-                stats_line.write(
-                    f"**{total_questions_found[0]}** questions found so far "
-                    f"| Elapsed: {e_m}:{e_s:02d} "
-                    f"| Remaining: ~{remain_m}:{remain_s:02d}"
-                )
-
-            elif event == "merge_done":
-                progress_bar.progress(1.0)
-                stats_line.write(
-                    f"**{data['total_questions']}** questions extracted in total"
-                )
-
-        questions = extract_survey_questions(
-            client=client,
-            chunks=chunks,
-            model=model,
-            progress_callback=on_progress,
-        )
-
-        elapsed_total = time.time() - start_time
-        em, es = divmod(int(elapsed_total), 60)
-        status.update(
-            label=f"Phase 4/5: Finalizing — {len(questions)} questions in {em}:{es:02d}",
-            state="running", expanded=True,
-        )
-
-    if not questions:
-        st.warning("No questions could be extracted. Please check if the document contains survey questions.")
-        return
-
-    # SurveyDocument 생성
-    client_brand = st.session_state.get("study_client_brand", "")
-    study_objective = st.session_state.get("study_objective", "")
-    survey_doc = SurveyDocument(
-        filename=uploaded_file.name,
-        questions=questions,
-        client_brand=client_brand,
-        study_objective=study_objective,
-    )
-
-    # 후처리: SummaryType, TableNumber 계산
-    apply_postprocessing(survey_doc)
-
-    # ── Phase 5: Survey Enrichment ──
-    with st.status("Phase 5/5: Enriching survey intelligence...", expanded=True) as enrich_status:
-        try:
-            intelligence = analyze_survey_intelligence(
-                questions, language="en",
-                client_brand=client_brand,
-                study_objective=study_objective,
-            )
-            enrich_document(survey_doc, intelligence)
-            obj_count = len(intelligence.get("research_objectives", []))
-            seg_count = len(intelligence.get("key_segments", []))
-            enrich_status.write(
-                f"Study: {intelligence.get('study_type', '')} | "
-                f"{obj_count} objectives | {seg_count} key segments"
-            )
-            enrich_status.update(label="Phase 5/5: Enrichment complete!", state="complete")
-        except Exception as e:
-            enrich_status.update(label=f"Phase 5/5: Enrichment skipped ({e})", state="error")
-
-    # 세션 상태 저장
-    st.session_state['survey_document'] = survey_doc
-    st.session_state['edited_df'] = survey_doc.to_dataframe()
-
-    st.success(f"Successfully extracted **{len(questions)}** questions from the PDF!", icon="✅")
-
-    # Intelligence 요약 카드
-    _render_intelligence_summary(survey_doc)
-
-    # 세션 저장 유도 배너
-    with st.container(border=True):
-        save_col1, save_col2 = st.columns([3, 1])
-        with save_col1:
-            st.markdown(
-                "💾 **Save your session** to skip this step next time.  \n"
-                "Upload the saved `.json` file later to instantly restore all results."
-            )
-        with save_col2:
-            st.download_button(
-                label="💾 Save Session",
-                data=survey_doc.to_json_bytes(),
-                file_name=f"{os.path.splitext(uploaded_file.name)[0]}_session.json",
-                mime='application/json',
-                use_container_width=True,
-                type="primary",
-            )
-
-    st.toast("Extraction complete! Save your session for future use.", icon="💾")
-
-    # 결과 표시
-    _display_docx_results(survey_doc)
+            st.error("지원하지 않는 파일 형식입니다. .docx 파일을 업로드해주세요.")
 
 
 def _process_docx(uploaded_file, client):
     """DOCX AI 추출 파이프라인"""
 
     # ── Study Brief (optional) ──
-    with st.expander("Study Brief (optional — improves enrichment quality)", expanded=False):
+    with st.expander("Study Brief (선택사항 — 분석 품질 향상에 도움)", expanded=False):
         brief_col1, brief_col2 = st.columns(2)
         with brief_col1:
             client_brand = st.text_input(
@@ -273,7 +67,7 @@ def _process_docx(uploaded_file, client):
             st.session_state["study_objective"] = study_objective
 
     # 추출 버튼
-    extract_button = st.button('Extract Questions with AI', key='extract_docx_button', use_container_width=True)
+    extract_button = st.button('AI로 문항 추출 시작', key='extract_docx_button', use_container_width=True)
 
     # 이전 결과가 있으면 표시
     if 'survey_document' in st.session_state and not extract_button:
@@ -281,35 +75,35 @@ def _process_docx(uploaded_file, client):
         return
 
     if not extract_button:
-        st.info("Click 'Extract Questions with AI' to start AI-powered questionnaire analysis.", icon="🤖")
+        st.info("'AI로 문항 추출 시작' 버튼을 눌러 설문지 분석을 시작하세요.", icon="🤖")
         return
 
     # ── 추출 파이프라인 시작 ──
     model = MODEL_DOC_ANALYZER
 
-    with st.status("Phase 1/5: Parsing DOCX structure...", expanded=True) as status:
+    with st.status("1/5단계: DOCX 구조 파싱 중...", expanded=True) as status:
         # Phase 1: DOCX 파싱
-        status.write("Parsing DOCX structure (styles, lists, tables)...")
+        status.write("DOCX 구조를 분석하고 있습니다 (스타일, 목록, 표)...")
         try:
             sections = parse_docx(uploaded_file)
         except Exception as e:
-            status.update(label="Failed to parse DOCX file.", state="error")
-            st.error(f"Error parsing DOCX: {e}")
+            status.update(label="DOCX 파싱 실패", state="error")
+            st.error(f"DOCX 파싱 오류: {e}")
             return
 
         if not sections:
-            status.update(label="No content found in DOCX.", state="error")
-            st.warning("Could not extract content from the DOCX file.")
+            status.update(label="DOCX에서 내용을 찾을 수 없습니다.", state="error")
+            st.warning("DOCX 파일에서 내용을 추출할 수 없습니다.")
             return
 
         total_paragraphs = sum(len(s.paragraphs) for s in sections)
         total_tables = sum(len(s.tables) for s in sections)
-        status.write(f"✅ Parsed: {len(sections)} sections, "
-                     f"{total_paragraphs} paragraphs, {total_tables} tables")
+        status.write(f"✅ 파싱 완료: {len(sections)}개 섹션, "
+                     f"{total_paragraphs}개 단락, {total_tables}개 표")
 
         # Phase 1 cont: 어노테이션 텍스트 + 청킹
         chunks = chunk_sections(sections)
-        status.write(f"✅ Split into {len(chunks)} chunk(s) for AI processing")
+        status.write(f"✅ AI 처리를 위해 {len(chunks)}개 청크로 분할")
 
         # Phase 3 준비: LLM 추출 (적응형 재청킹 포함)
         # 동적 업데이트용 컨테이너
@@ -324,20 +118,20 @@ def _process_docx(uploaded_file, client):
             elapsed = time.time() - start_time
 
             if event == "regex_done":
-                status.update(label="Phase 2/5: Scanning for question patterns...")
-                status.write(f"✅ Quick scan found ~{data['total_hints']} potential questions")
+                status.update(label="2/5단계: 문항 패턴 스캔 중...")
+                status.write(f"✅ 빠른 스캔으로 ~{data['total_hints']}개 문항 후보 발견")
 
             elif event == "rechunk":
                 status.write(
-                    f"ℹ️ Adaptive split: {data['original_chunks']} → "
-                    f"{data['new_chunks']} chunks ({data['reason']})"
+                    f"ℹ️ 적응형 재분할: {data['original_chunks']} → "
+                    f"{data['new_chunks']}개 청크 ({data['reason']})"
                 )
 
             elif event == "chunk_start":
                 total = data['total_chunks']
                 status.update(
-                    label=f"Phase 3/5: Extracting questions with AI... "
-                          f"(Chunk {chunks_done[0]}/{total} done)"
+                    label=f"3/5단계: AI로 문항 추출 중... "
+                          f"(청크 {chunks_done[0]}/{total} 완료)"
                 )
                 frac = max(chunks_done[0] / total, 0.0)
                 progress_bar.progress(frac)
@@ -353,29 +147,41 @@ def _process_docx(uploaded_file, client):
                 # 청크별 완료 로그
                 e_m, e_s = divmod(int(elapsed), 60)
                 status.write(
-                    f"✅ Chunk {data['chunk_index'] + 1}/{total}: "
-                    f"{extracted} questions ({e_m}:{e_s:02d})"
+                    f"✅ 청크 {data['chunk_index'] + 1}/{total}: "
+                    f"{extracted}개 문항 ({e_m}:{e_s:02d})"
                 )
 
-                # Phase label 업데이트
                 status.update(
-                    label=f"Phase 3/5: Extracting questions with AI... "
-                          f"(Chunk {done}/{total} done)"
+                    label=f"3/5단계: AI로 문항 추출 중... "
+                          f"(청크 {done}/{total} 완료)"
                 )
 
-                # ETA + 누적 통계 한 줄 요약
                 remaining = (elapsed / done * (total - done)) if done > 0 else 0
                 remain_m, remain_s = divmod(int(remaining), 60)
                 stats_line.write(
-                    f"📊 **{total_questions_found[0]}** questions found so far "
-                    f"| ⏱ Elapsed: {e_m}:{e_s:02d} "
-                    f"| Remaining: ~{remain_m}:{remain_s:02d}"
+                    f"📊 현재까지 **{total_questions_found[0]}**개 문항 발견 "
+                    f"| ⏱ 경과: {e_m}:{e_s:02d} "
+                    f"| 남은 시간: ~{remain_m}:{remain_s:02d}"
+                )
+
+            elif event == "chunk_error":
+                status.write(
+                    f"⚠️ 청크 {data['chunk_index'] + 1} 실패: {data['error']}"
+                )
+
+            elif event == "missed_questions":
+                status.write(
+                    f"⚠️ 패턴 스캔에서 감지되었으나 AI가 놓친 문항 {data['count']}건: "
+                    f"{', '.join(data['question_numbers'][:10])}"
+                    f"{'...' if data['count'] > 10 else ''}"
                 )
 
             elif event == "merge_done":
                 progress_bar.progress(1.0)
+                missed = data.get('missed_count', 0)
+                missed_note = f" (⚠️ {missed}건 누락 가능)" if missed else ""
                 stats_line.write(
-                    f"📊 **{data['total_questions']}** questions extracted in total"
+                    f"📊 총 **{data['total_questions']}**개 문항 추출 완료{missed_note}"
                 )
 
         questions = extract_survey_questions(
@@ -388,12 +194,12 @@ def _process_docx(uploaded_file, client):
         elapsed_total = time.time() - start_time
         em, es = divmod(int(elapsed_total), 60)
         status.update(
-            label=f"Phase 4/5: Finalizing — {len(questions)} questions in {em}:{es:02d}",
+            label=f"4/5단계: 마무리 중 — {len(questions)}개 문항, {em}:{es:02d} 소요",
             state="running", expanded=True,
         )
 
     if not questions:
-        st.warning("No questions could be extracted. Please check if the document contains survey questions.")
+        st.warning("문항을 추출할 수 없습니다. 문서에 설문 문항이 포함되어 있는지 확인해주세요.")
         return
 
     # SurveyDocument 생성
@@ -410,7 +216,7 @@ def _process_docx(uploaded_file, client):
     apply_postprocessing(survey_doc)
 
     # ── Phase 5: Survey Enrichment ──
-    with st.status("Phase 5/5: Enriching survey intelligence...", expanded=True) as enrich_status:
+    with st.status("5/5단계: 설문 인텔리전스 분석 중...", expanded=True) as enrich_status:
         try:
             intelligence = analyze_survey_intelligence(
                 questions, language="en",
@@ -424,15 +230,19 @@ def _process_docx(uploaded_file, client):
                 f"Study: {intelligence.get('study_type', '')} | "
                 f"{obj_count} objectives | {seg_count} key segments"
             )
-            enrich_status.update(label="Phase 5/5: Enrichment complete!", state="complete")
+            enrich_status.update(label="5/5단계: 인텔리전스 분석 완료!", state="complete")
         except Exception as e:
-            enrich_status.update(label=f"Phase 5/5: Enrichment skipped ({e})", state="error")
+            enrich_status.update(label=f"5/5단계: 인텔리전스 분석 건너뜀 ({e})", state="error")
 
     # 세션 상태 저장
     st.session_state['survey_document'] = survey_doc
     st.session_state['edited_df'] = survey_doc.to_dataframe()
 
-    st.success(f"Successfully extracted **{len(questions)}** questions from the document!", icon="✅")
+    st.success(f"**{len(questions)}**개 문항을 추출했습니다.", icon="✅")
+
+    # Coverage Report — 원본과 추출 결과 비교
+    coverage = check_extraction_coverage(sections, questions)
+    _render_coverage_report(coverage)
 
     # Intelligence 요약 카드
     _render_intelligence_summary(survey_doc)
@@ -442,12 +252,12 @@ def _process_docx(uploaded_file, client):
         save_col1, save_col2 = st.columns([3, 1])
         with save_col1:
             st.markdown(
-                "💾 **Save your session** to skip this step next time.  \n"
-                "Upload the saved `.json` file later to instantly restore all results."
+                "💾 **세션을 저장**하면 다음에 이 단계를 건너뛸 수 있습니다.  \n"
+                "저장된 `.json` 파일을 업로드하면 모든 결과를 즉시 복원합니다."
             )
         with save_col2:
             st.download_button(
-                label="💾 Save Session",
+                label="💾 세션 저장",
                 data=survey_doc.to_json_bytes(),
                 file_name=f"{os.path.splitext(uploaded_file.name)[0]}_session.json",
                 mime='application/json',
@@ -455,10 +265,42 @@ def _process_docx(uploaded_file, client):
                 type="primary",
             )
 
-    st.toast("Extraction complete! Save your session for future use.", icon="💾")
+    st.toast("추출이 완료되었습니다! 세션을 저장해두세요.", icon="💾")
 
     # 결과 표시
     _display_docx_results(survey_doc)
+
+
+def _render_coverage_report(report):
+    """Extraction Coverage Report UI 렌더링."""
+    from services.coverage_checker import CoverageReport
+
+    def _bar(label, extracted, total, emoji_ok="✅", emoji_warn="⚠️"):
+        if total == 0:
+            return f"{emoji_ok} **{label}**: 해당 없음"
+        pct = extracted / total * 100
+        emoji = emoji_ok if pct >= 80 else emoji_warn
+        return f"{emoji} **{label}**: {extracted}/{total} ({pct:.0f}%)"
+
+    lines = [
+        _bar("문항", report.extracted_questions, report.detected_questions),
+        _bar("보기", report.options_matched, report.tables_with_options),
+        _bar("스킵 로직", report.skip_extracted, report.skip_patterns_found),
+        _bar("필터", report.filter_extracted, report.filter_patterns_found),
+        _bar("지시문", report.instruction_extracted, report.instruction_patterns_found),
+    ]
+
+    if report.has_issues:
+        with st.expander(f"📊 추출 커버리지 — {len(report.items)}건 확인 필요", expanded=True):
+            st.markdown("  \n".join(lines))
+            st.markdown("---")
+            st.markdown("**확인이 필요한 항목:**")
+            for item in report.items:
+                icon = "⚠️" if item.severity == "warning" else "ℹ️"
+                st.markdown(f"- {icon} {item.description}")
+    else:
+        with st.expander("📊 추출 커버리지 — 누락 없음", expanded=False):
+            st.markdown("  \n".join(lines))
 
 
 def _render_intelligence_summary(doc: SurveyDocument):

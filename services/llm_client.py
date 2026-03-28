@@ -1,4 +1,5 @@
 import os
+import time
 import logging
 import streamlit as st
 from openai import OpenAI
@@ -108,6 +109,37 @@ def init_client():
         st.stop()
 
 
+_RETRYABLE_ERRORS = (ConnectionError, TimeoutError, OSError)
+_MAX_RETRIES = 3
+_BASE_DELAY = 2  # seconds
+
+
+def _is_retryable(error: Exception) -> bool:
+    """재시도 가능한 에러인지 판별."""
+    if isinstance(error, _RETRYABLE_ERRORS):
+        return True
+    msg = str(error).lower()
+    return any(kw in msg for kw in ('429', '500', '502', '503', 'rate limit', 'timeout', 'overloaded'))
+
+
+def _retry_with_backoff(func, *args, **kwargs):
+    """Exponential backoff 재시도 래퍼."""
+    last_error = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            last_error = e
+            if attempt < _MAX_RETRIES - 1 and _is_retryable(e):
+                delay = _BASE_DELAY * (2 ** attempt)
+                logger.warning(f"LLM call failed (attempt {attempt + 1}/{_MAX_RETRIES}): {e}. "
+                               f"Retrying in {delay}s...")
+                time.sleep(delay)
+            else:
+                raise
+    raise last_error
+
+
 def call_llm(prompt: str, model: str = DEFAULT_MODEL, *,
              temperature: float = 0.2, top_p: float = 0.8,
              max_tokens: int = 16384) -> str:
@@ -121,39 +153,40 @@ def call_llm(prompt: str, model: str = DEFAULT_MODEL, *,
     Returns:
         LLM 응답 텍스트
     """
-    if _is_gemini(model):
-        init_gemini()
-        from vertexai.generative_models import GenerativeModel, GenerationConfig
+    def _do_call():
+        if _is_gemini(model):
+            init_gemini()
+            from vertexai.generative_models import GenerativeModel, GenerationConfig
 
-        gemini = GenerativeModel(model)
-        config = GenerationConfig(
-            temperature=temperature,
-            top_p=top_p,
-            max_output_tokens=max_tokens,
-        )
-        response = gemini.generate_content(prompt, generation_config=config)
-        # Safety filter에 의해 blocked된 경우 response.text가 ValueError를 발생시킴
-        if not response.candidates:
-            raise ValueError("Gemini response blocked or empty (no candidates)")
-        try:
-            return response.text.strip()
-        except ValueError:
-            # blocked by safety filters — candidates 존재하나 content 없음
-            block_reason = getattr(response.candidates[0], "finish_reason", "unknown")
-            raise ValueError(f"Gemini response blocked (reason: {block_reason})")
-    else:
-        client = _get_openai_client()
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-        )
-        content = response.choices[0].message.content if response.choices else None
-        if content is None:
-            raise ValueError("OpenAI response returned empty content")
-        return content.strip()
+            gemini = GenerativeModel(model)
+            config = GenerationConfig(
+                temperature=temperature,
+                top_p=top_p,
+                max_output_tokens=max_tokens,
+            )
+            response = gemini.generate_content(prompt, generation_config=config)
+            if not response.candidates:
+                raise ValueError("Gemini response blocked or empty (no candidates)")
+            try:
+                return response.text.strip()
+            except ValueError:
+                block_reason = getattr(response.candidates[0], "finish_reason", "unknown")
+                raise ValueError(f"Gemini response blocked (reason: {block_reason})")
+        else:
+            client = _get_openai_client()
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+            )
+            content = response.choices[0].message.content if response.choices else None
+            if content is None:
+                raise ValueError("OpenAI response returned empty content")
+            return content.strip()
+
+    return _retry_with_backoff(_do_call)
 
 
 def call_llm_json(system_prompt: str, user_prompt: str, model: str = DEFAULT_MODEL, *,
@@ -184,43 +217,46 @@ def call_llm_json(system_prompt: str, user_prompt: str, model: str = DEFAULT_MOD
                 return json.loads(m.group(1))
             raise
 
-    if _is_gemini(model):
-        init_gemini()
-        from vertexai.generative_models import GenerativeModel, GenerationConfig
+    def _do_call():
+        if _is_gemini(model):
+            init_gemini()
+            from vertexai.generative_models import GenerativeModel, GenerationConfig
 
-        gemini = GenerativeModel(model, system_instruction=system_prompt)
-        config = GenerationConfig(
-            temperature=temperature,
-            top_p=top_p,
-            max_output_tokens=max_tokens,
-            response_mime_type="application/json",
-        )
-        response = gemini.generate_content(user_prompt, generation_config=config)
-        if not response.candidates:
-            raise ValueError("Gemini JSON response blocked or empty (no candidates)")
-        try:
-            raw_text = response.text
-        except ValueError:
-            block_reason = getattr(response.candidates[0], "finish_reason", "unknown")
-            raise ValueError(f"Gemini JSON response blocked (reason: {block_reason})")
-        return _parse_json_safe(raw_text)
-    else:
-        client = _get_openai_client()
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content if response.choices else None
-        if content is None:
-            raise ValueError("OpenAI JSON response returned empty content")
-        return _parse_json_safe(content)
+            gemini = GenerativeModel(model, system_instruction=system_prompt)
+            config = GenerationConfig(
+                temperature=temperature,
+                top_p=top_p,
+                max_output_tokens=max_tokens,
+                response_mime_type="application/json",
+            )
+            response = gemini.generate_content(user_prompt, generation_config=config)
+            if not response.candidates:
+                raise ValueError("Gemini JSON response blocked or empty (no candidates)")
+            try:
+                raw_text = response.text
+            except ValueError:
+                block_reason = getattr(response.candidates[0], "finish_reason", "unknown")
+                raise ValueError(f"Gemini JSON response blocked (reason: {block_reason})")
+            return _parse_json_safe(raw_text)
+        else:
+            client = _get_openai_client()
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content if response.choices else None
+            if content is None:
+                raise ValueError("OpenAI JSON response returned empty content")
+            return _parse_json_safe(content)
+
+    return _retry_with_backoff(_do_call)
 
 
 def question_summary(client, text, model=DEFAULT_MODEL):

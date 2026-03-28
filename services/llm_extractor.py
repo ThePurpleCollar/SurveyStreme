@@ -389,6 +389,21 @@ DO NOT EXTRACT these non-question items:
 - Data processing instructions, quota tables, or respondent allocation rules
 These are administrative/metadata elements, NOT survey questions asked to respondents.
 
+RENDERING MARKERS — Special annotations in document text:
+- [SECTION: TEXT] = Section boundary. NOT a question.
+- [TABLE:grid] [SCALE_HEADER] N | N ... [ROW] item [/TABLE]:
+  Scale battery. STEM before the table = question_text.
+  SCALE_HEADER count → question_type (e.g., "5pt x N").
+  ROW items → sub_items list.
+- [TABLE:matrix] [COL_HEADER] ... [ROW] item [/TABLE]:
+  Non-scale matrix. COL_HEADER → answer_options, ROW items → sub_items.
+- [TABLE:options]...[/TABLE] = Answer options for preceding question.
+- [TABLE:multi_question ...]: Each DATA ROW is a separate question.
+- [TABLE:info]: Informational. NOT a question.
+- [CODING_REF]...[/CODING_REF]: Variable/coding reference table. NOT answer options.
+  Do NOT extract these as answer_options. These are data processing specs.
+- [TEXTBOX: TEXT] = Text box content (interviewer instructions, programmer notes, filters).
+
 Annotation conventions in the text:
 - **bold text** = emphasis, question headers
 - "#. " or "- " prefix = list items (often answer options)
@@ -497,22 +512,53 @@ For each question, provide ALL of these fields:
 6. **filter**: Who answers this question. From "ASK IF", "ONLY IF", "모두에게", "[PN: ...]"
 7. **instructions**: Interviewer notes (e.g., "SHOW CARD", "ROTATE", "보기 로테이션")
 
-OUTPUT: Return ONLY valid JSON (no markdown code blocks):
+OUTPUT: Return ONLY valid JSON. No markdown code blocks, no explanation.
+
 {
   "questions": [
     {
-      "question_number": "string",
-      "question_text": "string",
-      "question_type": "string or null",
-      "answer_options": [{"code": "string", "label": "string"}],
-      "skip_logic": [{"condition": "string", "target": "string"}],
-      "filter": "string or null",
-      "instructions": "string or null"
+      "question_number": "string — the question identifier (e.g., 'Q1', 'SC2')",
+      "question_text": "string — question text WITHOUT number prefix or type brackets",
+      "question_type": "string or null — SA/MA/OE/NUMERIC/Npt/Npt x M/TopN/MATRIX/etc.",
+      "answer_options": [
+        {"code": "string", "label": "string"}
+      ],
+      "sub_items": [
+        "string — battery item label (for GRID/MATRIX questions only, else [])"
+      ],
+      "skip_logic": [
+        {"condition": "string", "target": "string"}
+      ],
+      "filter": "string or null — who answers this question",
+      "instructions": "string or null — interviewer notes (SHOW CARD, ROTATE, etc.)",
+      "programming_guide": {
+        "rotate_options": false,
+        "exclusive_codes": [],
+        "dk_codes": [],
+        "na_codes": [],
+        "pipe_from": null,
+        "constant_sum_total": null,
+        "rank_limit": null,
+        "anchor_labels": {},
+        "raw_notes": null
+      }
     }
   ]
 }
 
-Use [] for empty arrays, null for empty strings. Do NOT wrap in code blocks."""
+RULES:
+- Use [] for empty arrays, null for missing string/number values.
+- programming_guide: populate ONLY fields you can detect; leave others as shown above.
+  - rotate_options: true if "ROTATE", "randomize", "보기 로테이션" is mentioned
+  - exclusive_codes: list of code strings for "해당없음", "None of the above", "단독응답"
+  - dk_codes: list of code strings for "모르겠음", "DK", "잘 모름"
+  - na_codes: list of code strings for "해당없음", "N/A", "해당사항없음"
+  - pipe_from: question number string if piping is indicated (e.g., "Q3")
+  - constant_sum_total: number if "total must equal N" (e.g., 100)
+  - rank_limit: number if "Top N" ranking (e.g., 3 for "Top 3")
+  - anchor_labels: {"1": "Not at all", "5": "Extremely"} for scale anchors
+  - raw_notes: any remaining programming notes as a single string
+- If programming_guide has no detectable fields, omit it entirely or return null."""
 
 
 def _build_chunk_context(
@@ -944,7 +990,7 @@ def extract_questions_from_chunk(
 
     except Exception as e:
         logger.error(f"Chunk {chunk_index}: LLM call failed: {e}")
-        return []
+        raise  # 에러를 상위로 전파하여 사용자 알림 가능하게 함
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1116,10 +1162,17 @@ def extract_survey_questions(
             "chunk_index": 0, "total_chunks": 1,
             "regex_hints": len(pre_extracted_per_chunk[0]),
         })
-        result = extract_questions_from_chunk(
-            client, chunks[0], 0, 1, model, pre_extracted_per_chunk[0],
-            chunk_context=chunk_contexts[0],
-        )
+        try:
+            result = extract_questions_from_chunk(
+                client, chunks[0], 0, 1, model, pre_extracted_per_chunk[0],
+                chunk_context=chunk_contexts[0],
+            )
+        except Exception as e:
+            result = []
+            _notify("chunk_error", {
+                "chunk_index": 0, "total_chunks": 1,
+                "error": str(e),
+            })
         _notify("chunk_done", {
             "chunk_index": 0, "total_chunks": 1,
             "questions_extracted": len(result),
@@ -1151,6 +1204,10 @@ def extract_survey_questions(
                     idx = futures[future]
                     result = []
                     logger.error(f"Chunk {idx} extraction failed: {e}")
+                    _notify("chunk_error", {
+                        "chunk_index": idx, "total_chunks": total_chunks,
+                        "error": str(e),
+                    })
                 chunk_results[idx] = result
                 _notify("chunk_done", {
                     "chunk_index": idx, "total_chunks": total_chunks,
@@ -1168,7 +1225,25 @@ def extract_survey_questions(
         except Exception as e:
             logger.warning(f"Failed to create SurveyQuestion: {q_dict.get('question_number', '?')}: {e}")
 
-    _notify("merge_done", {"total_questions": len(questions)})
+    # 3-b단계: 2-pass 검증 — 정규식이 찾았는데 LLM이 놓친 문항 감지
+    llm_qns = {q.question_number for q in questions}
+    regex_qns = set()
+    for pre in pre_extracted_per_chunk:
+        for item in pre:
+            regex_qns.add(item["question_number"])
 
-    logger.info(f"LLM-first extraction complete: {len(questions)} questions")
+    missed = regex_qns - llm_qns
+    if missed:
+        missed_sorted = sorted(missed)
+        logger.warning(f"2-pass check: {len(missed)} questions found by regex but missed by LLM: "
+                        f"{', '.join(missed_sorted)}")
+        _notify("missed_questions", {
+            "count": len(missed),
+            "question_numbers": missed_sorted,
+        })
+
+    _notify("merge_done", {"total_questions": len(questions), "missed_count": len(missed) if missed else 0})
+
+    logger.info(f"LLM-first extraction complete: {len(questions)} questions"
+                f"{f' ({len(missed)} missed vs regex)' if missed else ''}")
     return questions

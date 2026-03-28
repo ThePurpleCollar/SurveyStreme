@@ -6,12 +6,11 @@ Streamlit-based survey questionnaire analysis platform for automated question ex
 
 | Feature | Description | LLM |
 |---------|-------------|-----|
-| **Questionnaire Analyzer** | PDF/DOCX question extraction with 5-phase pipeline | Gemini 2.5 Pro |
+| **Questionnaire Analyzer** | DOCX question extraction with 5-phase pipeline | Gemini 2.5 Pro |
 | **Intelligence Dashboard** | Survey overview metrics, flow diagrams, distributions | None (algorithmic) |
 | **Table Guide Builder** | 6-tab cross-tabulation guide with expert consensus banners | GPT-5 |
 | **Quality Checker** | 6-category issue detection + grammar correction | GPT-5 |
 | **Length Estimator** | Cognitive-load-based survey completion time estimation | GPT-4.1-mini |
-| **Translation Helper** | Multi-language translation (14 languages) preserving MR terminology | GPT-5 |
 | **Skip Logic Visualizer** | Graphviz flow diagram of skip/branch logic | None (algorithmic) |
 | **Path Simulator** | DFS path enumeration, test scenarios, interactive tracer | None (algorithmic) |
 | **Checklist Generator** | Link-test checklist (5 algorithmic + 1 LLM check) | GPT-4.1-mini |
@@ -24,7 +23,7 @@ Streamlit-based survey questionnaire analysis platform for automated question ex
 - **Package Manager**: Poetry
 - **LLM**: Gemini 2.5 Pro (extraction), GPT-5 (enrichment), GPT-4.1-mini (utilities)
 - **LLM Proxy**: LiteLLM (Ipsos internal)
-- **Key Libraries**: python-docx, PyMuPDF, pandas, openai, openpyxl, google-cloud-aiplatform
+- **Key Libraries**: python-docx, pandas, openai, openpyxl, google-cloud-aiplatform
 
 ## Installation
 
@@ -66,7 +65,6 @@ services/
   quality_checker.py    # 6-category survey quality analysis
   grammar_checker.py    # Batch grammar correction
   length_estimator.py   # Cognitive-load LOI estimation
-  translation_service.py # Multi-language translation
   skip_logic_service.py # Skip logic graph building
   path_simulator.py     # DFS path enumeration + test scenarios
   checklist_generator.py # Link-test checklist (algorithmic + LLM)
@@ -74,7 +72,6 @@ services/
   survey_context.py     # Shared survey context builder
   docx_parser.py        # DOCX parsing with format metadata
   docx_renderer.py      # DOCX-to-annotated-text for LLM
-  pdf_parser.py         # PDF text extraction (PyMuPDF)
   postprocessor.py      # SummaryType, TableNumber assignment
   chunker.py            # Document chunking (question-boundary)
 pages/
@@ -83,7 +80,6 @@ pages/
   table_guide.py        # Table Guide Builder UI (6 tabs)
   quality_checker.py    # Quality Checker UI (2 tabs)
   length_estimator.py   # Length Estimator UI
-  translation_helper.py # Translation Helper UI
   skip_logic_visualizer.py # Skip Logic Visualizer UI
   path_simulator.py     # Path Simulator UI (3 tabs)
   checklist_generator.py # Checklist Generator UI

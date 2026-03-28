@@ -4,12 +4,14 @@ python-docx로 각 paragraph의 스타일, 서식(굵기/기울임/밑줄/취소
 들여쓰기 레벨, 목록 레벨, 표 데이터를 추출합니다.
 """
 
+import re as _re
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
 from docx import Document
 
 # Word XML 네임스페이스
 WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+WPS_NS = 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape'
 NSMAP = {'w': WORD_NS}
 
 
@@ -41,12 +43,34 @@ class DocxParagraph:
 
 
 @dataclass
+class DocxCell:
+    """표의 개별 셀 — 병합 정보 포함."""
+    text: str
+    is_merged_continuation: bool = False  # True = 병합으로 인한 복제 셀
+    row_span: int = 1
+    col_span: int = 1
+
+
+@dataclass
 class DocxTable:
     """DOCX 테이블"""
-    rows: List[List[str]] = field(default_factory=list)
+    rows: List[List[str]] = field(default_factory=list)       # 하위 호환용 유지
     header_row: List[str] = field(default_factory=list)
     row_count: int = 0
     col_count: int = 0
+    table_type: str = "unknown"
+    has_merged_cells: bool = False
+    raw_cells: List[List['DocxCell']] = field(default_factory=list)
+
+    @property
+    def rows_text(self) -> List[List[str]]:
+        """continuation 셀 제거한 클린 행 텍스트."""
+        if not self.raw_cells:
+            return self.rows
+        return [
+            [c.text for c in row if not c.is_merged_continuation]
+            for row in self.raw_cells
+        ]
 
 
 ContentItem = Union[DocxParagraph, DocxTable]
@@ -65,6 +89,33 @@ class DocxSection:
     @property
     def tables(self) -> List[DocxTable]:
         return [c for c in self.content if isinstance(c, DocxTable)]
+
+
+def _extract_textbox_text(paragraph) -> str:
+    """paragraph 내 텍스트 박스(wps:txbx)의 텍스트를 추출.
+
+    Returns:
+        추출된 텍스트 또는 빈 문자열 (텍스트 박스 없으면)
+    """
+    try:
+        for drawing in paragraph._element.findall(
+            f'.//{{{WORD_NS}}}drawing'
+        ):
+            for txbx_content in drawing.findall(
+                f'.//{{{WPS_NS}}}txbx/{{{WORD_NS}}}txbxContent'
+            ):
+                texts = []
+                for p in txbx_content.findall(f'{{{WORD_NS}}}p'):
+                    t = ''.join(
+                        r.text or '' for r in p.findall(f'.//{{{WORD_NS}}}t')
+                    ).strip()
+                    if t:
+                        texts.append(t)
+                if texts:
+                    return ' / '.join(texts)
+    except Exception:
+        pass
+    return ''
 
 
 def _get_list_info(paragraph) -> tuple:
@@ -147,9 +198,13 @@ def _parse_paragraph(paragraph) -> Optional[DocxParagraph]:
     """python-docx paragraph를 DocxParagraph로 변환"""
     text = paragraph.text.strip()
 
-    # 빈 paragraph 건너뛰기
+    # 빈 paragraph도 텍스트 박스가 있을 수 있으므로 먼저 확인
     if not text:
-        return None
+        textbox_text = _extract_textbox_text(paragraph)
+        if textbox_text:
+            text = f"[TEXTBOX: {textbox_text}]"
+        else:
+            return None
 
     # 스타일 이름
     style_name = paragraph.style.name if paragraph.style else "Normal"
@@ -209,6 +264,14 @@ def _parse_paragraph(paragraph) -> Optional[DocxParagraph]:
     # 들여쓰기 레벨
     indent_level = _get_indent_level(paragraph)
 
+    # 텍스트 박스 추출
+    textbox_text = _extract_textbox_text(paragraph)
+    if textbox_text:
+        if text:
+            text = f"{text} [TEXTBOX: {textbox_text}]"
+        else:
+            text = f"[TEXTBOX: {textbox_text}]"
+
     return DocxParagraph(
         text=text,
         style_name=style_name,
@@ -225,18 +288,150 @@ def _parse_paragraph(paragraph) -> Optional[DocxParagraph]:
     )
 
 
+# 코딩 참고 표 헤더 키워드
+_CODING_REF_HEADERS = frozenset({
+    'variable', 'var', 'code', 'label', 'value', 'name', 'description',
+    '변수', '코드', '레이블', '값', '이름', '설명', '항목',
+})
+
+# 문항 번호 패턴 (multi_question 감지용)
+_QN_IN_CELL_RE = _re.compile(
+    r'^[A-Za-z]+\d+[a-z]?[.)\s]',
+)
+
+
+def _classify_table(rows: List[List[str]]) -> str:
+    """표의 내용을 분석하여 타입을 분류한다.
+
+    Returns:
+        'section_header' | 'coding_reference' | 'multi_question' |
+        'code_label' | 'grid' | 'matrix' | 'generic' | 'unknown'
+    """
+    if not rows:
+        return "unknown"
+
+    row_count = len(rows)
+    col_count = max(len(r) for r in rows) if rows else 0
+
+    # ── section_header: 1×1 표, 짧은 텍스트, 지시문 패턴 없음 ──
+    if row_count == 1 and col_count == 1:
+        text = rows[0][0].strip()
+        if not text:
+            return "unknown"
+        # 100자 이상이면 지시문/설명일 가능성 → generic으로 보존
+        if len(text) > 100:
+            return "generic"
+        # 지시문/필터 패턴이 포함되어 있으면 generic으로 보존
+        text_upper = text.upper()
+        if any(kw in text_upper for kw in (
+            '[PN:', 'ASK IF', 'ASK ALL', 'SHOW CARD', 'ROTATE',
+            '모두에게', '응답자', '제시',
+        )):
+            return "generic"
+        return "section_header"
+
+    # ── coding_reference: 헤더에 Variable/Code/Label 키워드 포함 (3열 이상, 60%) ──
+    if rows and col_count >= 2:
+        header_cells = [c.strip().lower() for c in rows[0] if c.strip()]
+        header_matches = sum(1 for c in header_cells if c in _CODING_REF_HEADERS)
+        if header_cells and header_matches / len(header_cells) >= 0.6:
+            return "coding_reference"
+
+    # ── multi_question: 첫 번째 열에 여러 문항 번호 패턴 ──
+    if col_count >= 2:
+        first_col_values = [rows[i][0].strip() for i in range(row_count)
+                            if rows[i] and rows[i][0].strip()]
+        qn_count = sum(1 for v in first_col_values if _QN_IN_CELL_RE.match(v))
+        if first_col_values and qn_count / len(first_col_values) >= 0.5 and qn_count >= 2:
+            return "multi_question"
+
+    # ── code_label: 2열 표, 첫 열이 숫자/코드, 두 번째 열이 텍스트 ──
+    if col_count == 2 and row_count >= 2:
+        data_rows = rows[1:] if len(rows) > 1 else rows
+        numeric_first = sum(
+            1 for r in data_rows
+            if r[0].strip() and r[0].strip().lstrip('-').isdigit()
+        )
+        if data_rows and numeric_first / len(data_rows) >= 0.6:
+            return "code_label"
+
+    # ── grid: 첫 행이 숫자 척도, 나머지 행이 항목 ──
+    if row_count >= 3 and col_count >= 3:
+        header = [c.strip() for c in rows[0] if c.strip()]
+        scale_headers = [c for c in header[1:] if c] if len(header) > 1 else header
+        numeric_headers = sum(1 for c in scale_headers if c.isdigit() or
+                              c in ('○', '●', '□', '■'))
+        if scale_headers and numeric_headers / len(scale_headers) >= 0.6:
+            return "grid"
+
+    # ── matrix: 3행 이상, 3열 이상, 첫 열이 텍스트 항목 ──
+    if row_count >= 3 and col_count >= 3:
+        first_col = [rows[i][0].strip() for i in range(1, row_count) if rows[i]]
+        non_numeric = sum(1 for v in first_col if v and not v.lstrip('-').isdigit())
+        if first_col and non_numeric / len(first_col) >= 0.7:
+            return "matrix"
+
+    return "generic"
+
+
+def _is_cell_strikethrough(cell) -> bool:
+    """셀의 텍스트 런이 모두 취소선(strikethrough)인지 확인.
+
+    취소선 셀 = 삭제된 보기. 빈 셀이면 False 반환.
+    셀 내 여러 단락이 있으면 첫 번째 비어있지 않은 단락 기준으로 판단.
+    """
+    for para in cell.paragraphs:
+        runs_with_text = [r for r in para.runs if r.text.strip()]
+        if not runs_with_text:
+            continue
+        return all(bool(r.font.strike) for r in runs_with_text)
+    return False
+
+
 def _parse_table(table) -> DocxTable:
-    """python-docx Table을 DocxTable로 변환"""
-    rows_data = []
+    """python-docx Table을 DocxTable로 변환.
+
+    병합 셀은 seen_tc_ids로 중복 제거하고,
+    취소선 셀은 삭제된 내용으로 간주하여 빈 문자열로 처리한다.
+    """
+    raw_cells_data: List[List[DocxCell]] = []
+    rows_data: List[List[str]] = []
+    has_merged = False
+
     for row in table.rows:
-        row_data = [cell.text.strip() for cell in row.cells]
-        rows_data.append(row_data)
+        seen_tc_ids: set = set()
+        row_cells: List[DocxCell] = []
+        row_text: List[str] = []
+
+        for cell in row.cells:
+            tc_id = id(cell._tc)
+            is_dup = tc_id in seen_tc_ids
+            seen_tc_ids.add(tc_id)
+
+            if is_dup:
+                has_merged = True
+                row_cells.append(DocxCell(text=cell.text.strip(),
+                                          is_merged_continuation=True))
+            else:
+                # 취소선 셀은 빈 문자열로 치환
+                text = "" if _is_cell_strikethrough(cell) else cell.text.strip()
+                row_cells.append(DocxCell(text=text,
+                                          is_merged_continuation=False))
+                row_text.append(text)
+
+        raw_cells_data.append(row_cells)
+        rows_data.append(row_text)
+
+    table_type = _classify_table(rows_data)
 
     return DocxTable(
         rows=rows_data,
         header_row=rows_data[0] if rows_data else [],
         row_count=len(rows_data),
         col_count=len(rows_data[0]) if rows_data else 0,
+        table_type=table_type,
+        has_merged_cells=has_merged,
+        raw_cells=raw_cells_data,
     )
 
 
@@ -289,7 +484,16 @@ def parse_docx(file) -> List[DocxSection]:
                 table_index += 1
 
                 parsed_table = _parse_table(table)
-                if parsed_table.row_count > 0:
+                if parsed_table.row_count == 0:
+                    continue
+
+                if parsed_table.table_type == "section_header":
+                    heading_text = parsed_table.rows[0][0].strip()
+                    if heading_text:
+                        if current_section.content or current_section.heading:
+                            sections.append(current_section)
+                        current_section = DocxSection(heading=heading_text)
+                else:
                     current_section.content.append(parsed_table)
 
     # 마지막 섹션 추가

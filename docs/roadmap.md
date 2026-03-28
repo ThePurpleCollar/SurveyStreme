@@ -42,8 +42,8 @@
 
 ## Phase 7 — 안정성
 
-- [ ] **TASK-20**: LLM 호출 자동 재시도 (exponential backoff) — TASK-10 통합
-- [ ] **TASK-21**: Phase 5 enrichment 실패 시 사용자 알림
+- [x] **TASK-20**: LLM 호출 자동 재시도 (exponential backoff) — TASK-10 통합
+- [x] **TASK-21**: Phase 5 enrichment 실패 시 사용자 알림
 
 ## Phase 8 — 신규 기능 ✅
 
@@ -62,3 +62,18 @@
 
 - [x] **Banner Pipeline Enhancement**: 구조화된 study params, 도메인별 카테고리 힌트/composite 예시, research plan 재시도, composite 품질 스코어링, semantic relevance 기반 배너-문항 할당 정렬
 - [x] **Banner Management UI**: 체크박스 기반 일괄 제거 (Banner Summary 테이블), Add New Banner 강화, 개별 Remove 버튼 우측 정렬
+
+## Phase P — 파서 레이어 강화 (DOCX 전용)
+
+> 실제 설문지 7개 파일 분석 결과 도출된 개선 항목.
+> PDF는 서식 손실로 인해 스코프 제외 결정 (2026-03).
+
+- [x] **TASK-P0-SETUP**: PDF 제외 결정 반영, roadmap 업데이트 → @docs/tasks/task-p0-setup.md
+- [x] **TASK-P1T1a**: DocxCell dataclass + _parse_table() 병합 셀 처리 → @docs/tasks/task-p1t1-merged-cell-parsing.md
+- [x] **TASK-P1T1b**: _parse_table() 취소선 셀 처리 추가 → @docs/tasks/task-p1t1-strikethrough-cells.md
+- [x] **TASK-P1T2**: 표 타입 분류기 확장 (section_header, coding_reference, multi_question) → @docs/tasks/task-p1t2-table-type-classifier.md
+- [x] **TASK-P1T3**: 텍스트 박스 추출 → @docs/tasks/task-p1t3-textbox-extraction.md
+- [x] **TASK-P1T4**: 표 타입별 렌더링 + SYSTEM_PROMPT 마커 → @docs/tasks/task-p1t4-table-type-renderer.md
+- [x] **TASK-P2T5**: SurveyQuestion 스키마 확장 (sub_items, ProgrammingGuide) → @docs/tasks/task-p2t5-schema-extension.md
+- [x] **TASK-P2T6**: LLM 프롬프트 + 출력 JSON 스키마 교체 완료 → @docs/tasks/task-p2t6-prompt-schema.md
+- [x] **TASK-P3T8**: 1셀 표 섹션 헤더 패턴 추가 → @docs/tasks/task-p3t8-section-detection.md

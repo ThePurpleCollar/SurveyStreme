@@ -1,12 +1,13 @@
 # Survey Stream (questvoyager)
 
-설문지(PDF/DOCX) 자동 분석 및 Table Guide 생성 Streamlit 웹앱.
+설문지(DOCX) 자동 분석 및 Table Guide 생성 Streamlit 웹앱.
 
 ## Tech Stack
 - Python 3.11+, Streamlit, Poetry
 - LLM: Gemini 2.5 Pro (문항 추출), GPT-5 (Title/Grammar/Quality), GPT-4.1-mini (Net·Length/Checklist)
 - LLM 프록시: LiteLLM (Ipsos 내부)
-- 주요 라이브러리: python-docx, PyMuPDF, pandas, openai, openpyxl
+- 주요 라이브러리: python-docx, pandas, openai, openpyxl
+- NOTE: PDF 스코프 제외 결정 (2026-03). 현재 DOCX-only 파이프라인만 유지.
 
 ## Project Structure
 ```

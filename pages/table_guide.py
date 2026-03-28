@@ -34,8 +34,8 @@ def _get_survey_context(df=None) -> str:
     """session_state의 SurveyDocument에서 survey context 생성."""
     doc = st.session_state.get("survey_document")
     if doc:
-        return build_survey_context(doc, df=df)
-    # doc이 없으면 빈 문자열
+        brief = st.session_state.get("study_brief")
+        return build_survey_context(doc, df=df, confirmed_brief=brief)
     return ""
 
 
@@ -437,7 +437,7 @@ def _render_title_comparison(results: list, filter_mode: str):
         filtered = [r for r in results if r["error"]]
 
     if not filtered:
-        st.info("No questions match the selected filter.")
+        st.info("선택한 필터에 해당하는 문항이 없습니다.")
         return
 
     for r in filtered:
@@ -484,7 +484,7 @@ def _render_title_editable_table():
         num_rows="dynamic", key="title_editor", use_container_width=True,
     )
 
-    if st.button("Apply Edits", type="primary", key="apply_title_edits"):
+    if st.button("수정사항 적용", type="primary", key="apply_title_edits"):
         for col in display_cols:
             st.session_state["edited_df"][col] = edited[col]
         if "survey_document" in st.session_state and st.session_state["survey_document"]:
@@ -492,7 +492,7 @@ def _render_title_editable_table():
             for q in st.session_state["survey_document"].questions:
                 if q.table_number in tn_to_title:
                     q.table_title = str(tn_to_title[q.table_number])
-        st.success("Edits applied successfully!")
+        st.success("수정사항이 적용되었습니다!")
         st.rerun()
 
 
@@ -505,16 +505,16 @@ def _tab_table_titles(df: pd.DataFrame, language: str):
     split_rows = sum(g["row_count"] for g in groups if g["row_count"] > 1)
 
     st.info(
-        f"Found **{total_unique}** unique questions "
-        f"(**{total_rows}** rows, **{split_rows}** split rows in **{split_count}** questions). "
-        "Click **Generate Titles** to create table titles.",
+        f"고유 문항 **{total_unique}**개 "
+        f"(총 **{total_rows}**행, **{split_count}**개 문항에서 **{split_rows}**행 분할). "
+        "**Table Title 생성** 버튼을 눌러 제목을 생성하세요.",
         icon="\u2139\ufe0f",
     )
 
-    generate_clicked = st.button("Generate Titles", type="primary", key="generate_titles_btn")
+    generate_clicked = st.button("Table Title 생성", type="primary", key="generate_titles_btn")
 
     if generate_clicked:
-        with st.status("Generating titles...", expanded=True) as status:
+        with st.status("Table Title 생성 중...", expanded=True) as status:
             progress_bar = st.progress(0)
             log_area = st.empty()
             batch_done_count = [0]
@@ -524,15 +524,15 @@ def _tab_table_titles(df: pd.DataFrame, language: str):
                 if event == "batch_start":
                     total_batches_ref[0] = data["total_batches"]
                     log_area.text(
-                        f"Processing batch {data['batch_index'] + 1}/{data['total_batches']} "
-                        f"({data['question_count']} questions)..."
+                        f"배치 {data['batch_index'] + 1}/{data['total_batches']} 처리 중 "
+                        f"({data['question_count']}개 문항)..."
                     )
                 elif event == "batch_done":
                     batch_done_count[0] += 1
                     progress_bar.progress(batch_done_count[0] / total_batches_ref[0])
                     log_area.text(
-                        f"Batch {data['batch_index'] + 1}/{data['total_batches']} done "
-                        f"({data['generated_count']} generated)"
+                        f"배치 {data['batch_index'] + 1}/{data['total_batches']} 완료 "
+                        f"({data['generated_count']}개 생성)"
                     )
 
             questions = _get_questions()
@@ -543,7 +543,7 @@ def _tab_table_titles(df: pd.DataFrame, language: str):
             _apply_results_to_df(results)
             generated_count = sum(1 for r in results if not r["error"])
             status.update(
-                label=f"Title generation complete! {generated_count}/{len(results)} titles generated.",
+                label=f"Title 생성 완료! {generated_count}/{len(results)}개 생성됨.",
                 state="complete",
             )
 
@@ -561,15 +561,17 @@ def _tab_table_titles(df: pd.DataFrame, language: str):
     st.divider()
     _render_title_dashboard(results)
 
-    filter_mode = st.radio(
-        "Filter", options=["All", "Split Only", "Non-Split Only", "Errors Only"],
-        horizontal=True, key="title_filter_radio",
-    )
-    _render_title_comparison(results, filter_mode)
-
-    st.divider()
-    st.subheader("Editable Table")
+    # Editable Table을 기본으로 표시
     _render_title_editable_table()
+
+    # Comparison View는 보조로 expander 안에 배치
+    with st.expander("비교 보기 (원본 vs 생성)", expanded=False):
+        filter_mode = st.radio(
+            "필터", options=["All", "Split Only", "Non-Split Only", "Errors Only"],
+            format_func=lambda x: {"All": "전체", "Split Only": "분할 문항만", "Non-Split Only": "단일 문항만", "Errors Only": "오류만"}[x],
+            horizontal=True, key="title_filter_radio",
+        )
+        _render_title_comparison(results, filter_mode)
 
 
 # ======================================================================
@@ -580,14 +582,14 @@ def _tab_net_recode(df: pd.DataFrame, language: str):
     """Tab 2: Net/Recode."""
     questions = _get_questions()
     if not questions:
-        st.warning("No questions available. Please run Questionnaire Analyzer first.")
+        st.warning("문항 데이터가 없습니다. Questionnaire Analyzer에서 먼저 문서를 처리해주세요.")
         return
 
-    generate_clicked = st.button("Generate Net/Recode", type="primary",
+    generate_clicked = st.button("Net/Recode 생성", type="primary",
                                  key="generate_net_btn")
 
     if generate_clicked:
-        with st.status("Generating Net/Recode...", expanded=True) as status:
+        with st.status("Net/Recode 생성 중...", expanded=True) as status:
             progress_bar = st.progress(0)
             log_area = st.empty()
 
@@ -599,14 +601,14 @@ def _tab_net_recode(df: pd.DataFrame, language: str):
 
             survey_ctx = _get_survey_context(df=df)
 
-            log_area.text("Generating Net/Recode suggestions...")
+            log_area.text("Net/Recode 제안 생성 중...")
             net_map = generate_net_recodes(questions, language, _progress_cb,
                                            survey_context=survey_ctx)
             _sync_field_to_df_and_doc(net_map, "NetRecode", "net_recode")
 
             progress_bar.progress(1.0)
             st.session_state["net_generated"] = True
-            status.update(label="Net/Recode generation complete!", state="complete")
+            status.update(label="Net/Recode 생성 완료!", state="complete")
 
     # Dashboard 메트릭
     if st.session_state.get("net_generated") or st.session_state.get("base_net_generated"):
@@ -628,13 +630,13 @@ def _tab_net_recode(df: pd.DataFrame, language: str):
 
             c1, c2 = st.columns(2)
             with c1:
-                st.metric("With Net/Recode", net_count)
+                st.metric("Net/Recode 있음", net_count)
             with c2:
-                st.metric("No Net/Recode", no_net_count)
+                st.metric("Net/Recode 없음", no_net_count)
 
-        # Filter radio
         bn_filter = st.radio(
-            "Filter", options=["All", "Scale Only", "Custom Net"],
+            "필터", options=["All", "Scale Only", "Custom Net"],
+            format_func=lambda x: {"All": "전체", "Scale Only": "척도만", "Custom Net": "커스텀 Net"}[x],
             horizontal=True, key="bn_filter_radio",
         )
 
@@ -667,7 +669,7 @@ def _tab_net_recode(df: pd.DataFrame, language: str):
 
     # Editable Table
     st.divider()
-    st.subheader("Editable Table")
+    st.subheader("편집 테이블")
 
     display_cols = ["QuestionNumber", "TableNumber", "NetRecode", "SummaryType"]
     display_cols = [c for c in display_cols if c in df.columns]
@@ -678,7 +680,7 @@ def _tab_net_recode(df: pd.DataFrame, language: str):
             num_rows="dynamic", key="bn_editor", use_container_width=True,
         )
 
-        if st.button("Apply Edits", type="primary", key="apply_bn_edits"):
+        if st.button("수정사항 적용", type="primary", key="apply_bn_edits"):
             for col in display_cols:
                 st.session_state["edited_df"][col] = edited[col]
             if "survey_document" in st.session_state and st.session_state["survey_document"]:
@@ -690,7 +692,7 @@ def _tab_net_recode(df: pd.DataFrame, language: str):
                 for q in st.session_state["survey_document"].questions:
                     if q.question_number in qn_net:
                         q.net_recode = qn_net[q.question_number]
-            st.success("Edits applied successfully!")
+            st.success("수정사항이 적용되었습니다!")
             st.rerun()
 
 
@@ -726,29 +728,29 @@ def _tab_sort_details(df: pd.DataFrame, language: str):
     """Tab 3: Sort Order, SubBanner, BannerIDs, Special Instructions 편집."""
     questions = _get_questions()
     if not questions:
-        st.warning("No questions available. Please run Questionnaire Analyzer first.")
+        st.warning("문항 데이터가 없습니다. Questionnaire Analyzer에서 먼저 문서를 처리해주세요.")
         return
 
     # ── 개별 생성 버튼 ──
     btn_col1, btn_col2, btn_col3 = st.columns(3)
     with btn_col1:
-        sort_clicked = st.button("Generate Sort Orders", key="gen_sort_btn")
+        sort_clicked = st.button("Sort 생성", key="gen_sort_btn")
     with btn_col2:
-        sub_clicked = st.button("Generate SubBanners", key="gen_sub_btn")
+        sub_clicked = st.button("SubBanner 생성", key="gen_sub_btn")
     with btn_col3:
-        si_clicked = st.button("Generate Special Inst.", key="gen_si_btn")
+        si_clicked = st.button("Special Inst. 생성", key="gen_si_btn")
 
     survey_ctx = _get_survey_context(df=df)
 
     if sort_clicked:
-        with st.spinner("Generating sort orders..."):
+        with st.spinner("Sort 순서 생성 중..."):
             sort_map = generate_sort_orders(questions)
             _sync_field_to_df_and_doc(sort_map, "Sort", "sort_order")
             st.session_state["sort_generated"] = True
             st.rerun()
 
     if sub_clicked:
-        with st.spinner("Generating sub-banners..."):
+        with st.spinner("SubBanner 생성 중..."):
             sub_map = suggest_sub_banners(questions, language,
                                            survey_context=survey_ctx)
             _sync_field_to_df_and_doc(sub_map, "SubBanner", "sub_banner")
@@ -756,7 +758,7 @@ def _tab_sort_details(df: pd.DataFrame, language: str):
             st.rerun()
 
     if si_clicked:
-        with st.spinner("Generating special instructions..."):
+        with st.spinner("Special Instructions 생성 중..."):
             si_map = generate_special_instructions(questions, language,
                                                     survey_context=survey_ctx)
             _sync_field_to_df_and_doc(si_map, "SpecialInstructions", "special_instructions")
@@ -795,7 +797,8 @@ def _tab_sort_details(df: pd.DataFrame, language: str):
 
     # ── Filter radio ──
     detail_filter = st.radio(
-        "Filter", options=["All", "With SubBanner", "With Special Inst.", "No Banners"],
+        "필터", options=["All", "With SubBanner", "With Special Inst.", "No Banners"],
+        format_func=lambda x: {"All": "전체", "With SubBanner": "SubBanner 있음", "With Special Inst.": "Special Inst. 있음", "No Banners": "배너 미할당"}[x],
         horizontal=True, key="detail_filter_radio",
     )
 
@@ -839,7 +842,7 @@ def _tab_sort_details(df: pd.DataFrame, language: str):
 
     # ── Editable Table ──
     st.divider()
-    st.subheader("Editable Table")
+    st.subheader("편집 테이블")
 
     display_cols = ["QuestionNumber", "QuestionType", "Sort", "SubBanner",
                     "BannerIDs", "SpecialInstructions"]
@@ -851,7 +854,7 @@ def _tab_sort_details(df: pd.DataFrame, language: str):
             num_rows="dynamic", key="detail_editor", use_container_width=True,
         )
 
-        if st.button("Apply Edits", type="primary", key="apply_detail_edits"):
+        if st.button("수정사항 적용", type="primary", key="apply_detail_edits"):
             for col in display_cols:
                 st.session_state["edited_df"][col] = edited[col]
             # survey_document에 반영
@@ -870,7 +873,7 @@ def _tab_sort_details(df: pd.DataFrame, language: str):
                             for dq in doc.questions:
                                 if dq.question_number == qn:
                                     setattr(dq, attr, val)
-            st.success("Edits applied successfully!")
+            st.success("수정사항이 적용되었습니다!")
             st.rerun()
 
 
@@ -882,14 +885,14 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
     """Tab 3: Banner Management."""
     questions = _get_questions()
     if not questions:
-        st.warning("No questions available. Please run Questionnaire Analyzer first.")
+        st.warning("문항 데이터가 없습니다. Questionnaire Analyzer에서 먼저 문서를 처리해주세요.")
         return
 
-    suggest_clicked = st.button("Auto-Suggest Banner Points", type="primary",
+    suggest_clicked = st.button("배너 자동 추천", type="primary",
                                 key="suggest_banners_btn")
 
     if suggest_clicked:
-        with st.status("Generating banners with expert consensus...", expanded=True) as status:
+        with st.status("전문가 합의 기반 배너 생성 중...", expanded=True) as status:
             status_text = st.empty()
             expert_area = st.empty()
 
@@ -956,7 +959,7 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
                     summary += f" (agreement: {agreement:.0%})"
                 status.update(label=summary, state="complete")
             else:
-                status.update(label="No suitable banner candidates found.", state="error")
+                status.update(label="적합한 배너 후보를 찾지 못했습니다.", state="error")
 
     # ── Analysis Plan & Consensus 표시 ──
     plan = st.session_state.get("banner_analysis_plan")
@@ -1102,7 +1105,7 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
 
     # ── Banner Summary 테이블 (체크박스 제거 UI) ──
     if banners:
-        st.subheader("Banner Summary")
+        st.subheader("배너 요약")
         summary_data = []
         for b in banners:
             summary_data.append({
@@ -1133,13 +1136,13 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
         btn_col_rm, btn_col_add = st.columns(2)
         with btn_col_rm:
             if excluded:
-                if st.button(f"Remove Unchecked ({len(excluded)})", type="primary",
+                if st.button(f"미선택 항목 제거 ({len(excluded)})", type="primary",
                              key="remove_unchecked_banners"):
                     for idx in sorted(excluded, reverse=True):
                         doc.banners.pop(idx)
                     st.rerun()
         with btn_col_add:
-            if st.button("Add New Banner", key="add_banner_btn"):
+            if st.button("배너 추가", key="add_banner_btn"):
                 next_id = _banner_id_from_index(len(banners))
                 doc.banners.append(Banner(
                     banner_id=next_id,
@@ -1152,7 +1155,7 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
                 st.rerun()
     else:
         # 배너 없을 때도 Add 버튼 제공
-        if st.button("Add New Banner", key="add_banner_btn_empty"):
+        if st.button("배너 추가", key="add_banner_btn_empty"):
             if doc:
                 next_id = _banner_id_from_index(0)
                 doc.banners.append(Banner(
@@ -1227,7 +1230,7 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
                 # Apply Edits / Remove 버튼
                 btn_col1, btn_col2 = st.columns([3, 1])
                 with btn_col1:
-                    if st.button("Apply Edits", type="primary",
+                    if st.button("수정사항 적용", type="primary",
                                  key=f"apply_bp_{banner.banner_id}"):
                         new_points = []
                         for j, row in edited_bp.iterrows():
@@ -1260,7 +1263,7 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
     # Banner Preview — 합산 Cross-Tab 형태
     if banners:
         st.divider()
-        st.subheader("Banner Preview (Cross-Tab Layout)")
+        st.subheader("배너 프리뷰 (Cross-Tab 레이아웃)")
 
         # 전체 배너를 하나의 교차분석표 헤더로 합산
         header_row_1 = [""]  # 카테고리/배너명 행
@@ -1292,7 +1295,7 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
                      hide_index=True, use_container_width=True)
 
         # 카테고리별 상세 뷰 (접을 수 있는 개별 배너)
-        with st.expander("Banner Details (individual editing)", expanded=False):
+        with st.expander("배너 상세 편집", expanded=False):
             for cat_name, cat_banners in cat_groups.items():
                 st.markdown(f"#### {cat_name}")
                 for _, banner in cat_banners:
@@ -1315,12 +1318,11 @@ def _tab_review_export(df: pd.DataFrame, language: str):
     """Tab 6: Review & Export."""
     doc = st.session_state.get("survey_document")
     if not doc:
-        st.warning("No survey document available.")
+        st.warning("설문 문서가 없습니다.")
         return
 
-    # Project name 입력
     project_name = st.text_input(
-        "Project Name",
+        "프로젝트명",
         value=st.session_state.get("tg_project_name", doc.filename),
         key="tg_project_name_input",
     )
@@ -1330,31 +1332,31 @@ def _tab_review_export(df: pd.DataFrame, language: str):
     stats = _compute_completeness()
     total = stats["total"]
 
-    st.subheader("Completeness Checklist")
+    st.subheader("완성도 체크리스트")
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.checkbox(f"Table Titles: {stats['titles']}/{total}", value=stats['titles'] > 0, disabled=True)
+        st.checkbox(f"Table Title: {stats['titles']}/{total}", value=stats['titles'] > 0, disabled=True)
         st.checkbox(f"Net/Recode: {stats['nets']}/{total}", value=stats['nets'] > 0, disabled=True)
     with c2:
         st.checkbox(f"Sort: {stats['sorts']}/{total}", value=stats['sorts'] > 0, disabled=True)
-        st.checkbox(f"Banners: {stats['banners']} defined", value=stats['banners'] > 0, disabled=True)
+        st.checkbox(f"배너: {stats['banners']}개 정의됨", value=stats['banners'] > 0, disabled=True)
     with c3:
-        st.checkbox(f"Banner Assigned: {stats['banner_assigned']}/{total}", value=stats['banner_assigned'] > 0, disabled=True)
-        st.checkbox(f"Special Instr: {stats['special_instructions']}/{total}", value=stats['special_instructions'] > 0, disabled=True)
+        st.checkbox(f"배너 할당: {stats['banner_assigned']}/{total}", value=stats['banner_assigned'] > 0, disabled=True)
+        st.checkbox(f"Special Inst.: {stats['special_instructions']}/{total}", value=stats['special_instructions'] > 0, disabled=True)
 
     st.divider()
 
-    compile_clicked = st.button("Compile Table Guide", type="primary", key="compile_tg_btn")
+    compile_clicked = st.button("Table Guide 컴파일", type="primary", key="compile_tg_btn")
 
     if compile_clicked:
         tg_doc = compile_table_guide(doc, project_name, language)
         st.session_state["compiled_table_guide"] = tg_doc
-        st.success("Table Guide compiled successfully!")
+        st.success("Table Guide 컴파일이 완료되었습니다!")
 
     # Preview
     tg_doc = st.session_state.get("compiled_table_guide")
     if tg_doc:
-        st.subheader("Preview")
+        st.subheader("미리보기")
         preview_df = pd.DataFrame(tg_doc.rows)
 
         # BannerIDs를 readable 형태로 확장한 컬럼 추가
@@ -1363,8 +1365,9 @@ def _tab_review_export(df: pd.DataFrame, language: str):
 
         # 섹션별 보기 모드 선택
         preview_mode = st.radio(
-            "View",
+            "보기",
             options=["Full Table", "Identity & Titles", "Analysis Fields", "Banner & Instructions"],
+            format_func=lambda x: {"Full Table": "전체", "Identity & Titles": "문항 & Title", "Analysis Fields": "분석 필드", "Banner & Instructions": "배너 & 지시사항"}[x],
             horizontal=True, key="preview_mode_radio",
         )
 
@@ -1390,14 +1393,14 @@ def _tab_review_export(df: pd.DataFrame, language: str):
         st.divider()
 
         # Download buttons
-        st.subheader("Download")
+        st.subheader("다운로드")
         dl_col1, dl_col2, dl_col3 = st.columns(3)
 
         with dl_col1:
             intel = doc.survey_intelligence if doc else None
             excel_data = export_table_guide_excel(tg_doc, doc, intelligence=intel)
             st.download_button(
-                label="Download Full Table Guide (Excel)",
+                label="Table Guide 다운로드 (Excel)",
                 data=excel_data,
                 file_name=f"{project_name}_table_guide.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1412,7 +1415,7 @@ def _tab_review_export(df: pd.DataFrame, language: str):
             csv_cols = [c for c in csv_cols if c in preview_df.columns]
             csv_bytes = preview_df[csv_cols].to_csv(index=False).encode("utf-8-sig")
             st.download_button(
-                label="Download CSV (flat)",
+                label="CSV 다운로드",
                 data=csv_bytes,
                 file_name=f"{project_name}_table_guide.csv",
                 mime="text/csv",
@@ -1421,7 +1424,7 @@ def _tab_review_export(df: pd.DataFrame, language: str):
         with dl_col3:
             session_bytes = doc.to_json_bytes()
             st.download_button(
-                label="Download Session (JSON)",
+                label="세션 다운로드 (JSON)",
                 data=session_bytes,
                 file_name=f"{project_name}_session.json",
                 mime="application/json",
@@ -1441,7 +1444,7 @@ def _run_generate_all(df: pd.DataFrame, language: str):
 
     total_tasks = 3 if has_questions else 1
 
-    with st.status("Generating all Table Guide fields...", expanded=True) as status:
+    with st.status("Table Guide 전체 필드 생성 중...", expanded=True) as status:
         progress_bar = st.progress(0)
         log_area = st.empty()
 
@@ -1641,6 +1644,137 @@ def _run_generate_all(df: pd.DataFrame, language: str):
 
 
 # ======================================================================
+# Study Brief — AI 추정 → 사용자 확인/수정
+# ======================================================================
+
+def _render_study_brief(doc):
+    """Enrichment 결과를 프리필하여 Study Brief를 표시하고 사용자 확인을 받는다."""
+    intel = doc.survey_intelligence if doc else {}
+    brief_confirmed = st.session_state.get("study_brief_confirmed", False)
+
+    # Enrichment 결과에서 기본값 추출
+    default_client = (intel.get("client_name", "") or
+                      (doc.client_brand if doc else ""))
+    default_study_type = intel.get("study_type", "") or (doc.study_type if doc else "")
+    default_objectives = intel.get("research_objectives", [])
+    default_segments = intel.get("key_segments", [])
+    default_objective_text = (doc.study_objective if doc else "") or ""
+
+    # 확정된 brief가 있으면 요약만 표시
+    if brief_confirmed:
+        brief = st.session_state.get("study_brief", {})
+        with st.expander("Study Brief (confirmed)", expanded=False):
+            st.markdown(
+                f"**{brief.get('client_brand', '')}** — {brief.get('study_type', '')}  \n"
+                f"Objective: {brief.get('study_objective', '')}  \n"
+                f"Objectives: {' | '.join(brief.get('research_objectives', [])[:3])}  \n"
+                f"Segments: {' · '.join(brief.get('key_segment_names', []))}  \n"
+                f"Target Sample: {brief.get('target_sample', 'N/A')}"
+            )
+            if st.button("Edit Brief", key="edit_brief_btn"):
+                st.session_state["study_brief_confirmed"] = False
+                st.rerun()
+        return
+
+    # 미확정: 에디터블 폼 표시
+    expanded = not brief_confirmed
+    has_intel = bool(intel and intel.get("study_type"))
+
+    with st.expander(
+        "Study Brief — AI가 설문지에서 추정한 내용을 확인하세요"
+        if has_intel else "Study Brief — 프로젝트 정보를 입력하세요",
+        expanded=expanded,
+    ):
+        if has_intel:
+            st.caption("아래 내용은 설문지 분석에서 자동 추정되었습니다. 수정 후 확정해주세요.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            client_brand = st.text_input(
+                "Client Brand",
+                value=default_client,
+                placeholder="e.g. Hyundai, Samsung, LG",
+                key="tg_client_brand_input",
+            )
+        with col2:
+            study_type = st.text_input(
+                "Study Type",
+                value=default_study_type,
+                placeholder="e.g. Brand Tracking, U&A, Satisfaction",
+                key="tg_study_type_input",
+            )
+
+        study_objective = st.text_input(
+            "Study Objective",
+            value=default_objective_text,
+            placeholder="e.g. 브랜드 건강성 추적 및 경쟁 포지셔닝 분석",
+            key="tg_study_objective_input",
+        )
+
+        # Research Objectives (추정값 프리필)
+        default_obj_text = "\n".join(default_objectives) if default_objectives else ""
+        objectives_text = st.text_area(
+            "Research Objectives (한 줄에 하나씩)",
+            value=default_obj_text,
+            height=100,
+            placeholder="e.g.\n브랜드 인지도 변화 추적\n경쟁사 대비 포지셔닝 파악\n핵심 구매 요인 식별",
+            key="tg_objectives_input",
+        )
+
+        # Key Segments (추정값 프리필)
+        default_seg_names = [s.get("name", "") for s in default_segments if s.get("name")]
+        default_seg_text = ", ".join(default_seg_names) if default_seg_names else ""
+        segments_text = st.text_input(
+            "Key Analysis Segments (쉼표로 구분)",
+            value=default_seg_text,
+            placeholder="e.g. Gender, Age, Brand Users, Heavy/Light Users",
+            key="tg_segments_input",
+        )
+
+        # Target Sample
+        target_sample = st.number_input(
+            "Target Sample Size (n=)",
+            min_value=0,
+            value=st.session_state.get("target_sample", 0),
+            step=50,
+            help="배너포인트당 최소 셀 사이즈 계산에 사용됩니다. 0이면 미지정.",
+            key="tg_target_sample_input",
+        )
+
+        # 확정 버튼
+        if st.button("Confirm Study Brief", type="primary", key="confirm_brief_btn",
+                      use_container_width=True):
+            parsed_objectives = [
+                line.strip() for line in objectives_text.split("\n")
+                if line.strip()
+            ]
+            parsed_segments = [
+                s.strip() for s in segments_text.split(",")
+                if s.strip()
+            ]
+
+            brief = {
+                "client_brand": client_brand,
+                "study_type": study_type,
+                "study_objective": study_objective,
+                "research_objectives": parsed_objectives,
+                "key_segment_names": parsed_segments,
+                "target_sample": target_sample if target_sample > 0 else None,
+            }
+            st.session_state["study_brief"] = brief
+            st.session_state["study_brief_confirmed"] = True
+            st.session_state["target_sample"] = target_sample
+
+            # doc에도 반영
+            if doc:
+                doc.client_brand = client_brand
+                doc.study_objective = study_objective
+                doc.study_type = study_type
+
+            st.rerun()
+
+
+# ======================================================================
 # Main Page Entry Point
 # ======================================================================
 
@@ -1649,7 +1783,7 @@ def page_table_guide_builder():
 
     # Guard: edited_df 필요
     if "edited_df" not in st.session_state or st.session_state["edited_df"] is None or st.session_state["edited_df"].empty:
-        st.warning('Please process a document in "Questionnaire Analyzer" first.', icon="\u26a0\ufe0f")
+        st.warning('먼저 Questionnaire Analyzer에서 문서를 처리해주세요.', icon="\u26a0\ufe0f")
         return
 
     df = st.session_state["edited_df"]
@@ -1662,46 +1796,25 @@ def page_table_guide_builder():
 
     doc = st.session_state.get("survey_document")
 
-    # ── Study Brief 입력 (doc에서 읽기, 변경 시 doc에 반영) ──
-    with st.expander("Study Brief (optional — improves generation quality)", expanded=False):
-        brief_col1, brief_col2 = st.columns(2)
-        with brief_col1:
-            client_brand = st.text_input(
-                "Client Brand",
-                value=doc.client_brand if doc else "",
-                placeholder="e.g. Hyundai, Samsung, LG",
-                help="The brand commissioning the study. Enables client-specific banner segments.",
-                key="tg_client_brand_input",
-            )
-            if doc:
-                doc.client_brand = client_brand
-        with brief_col2:
-            study_objective = st.text_input(
-                "Study Objective",
-                value=doc.study_objective if doc else "",
-                placeholder="e.g. Brand health tracking, Customer satisfaction measurement",
-                help="Research purpose. Helps prioritize meaningful analytical dimensions.",
-                key="tg_study_objective_input",
-            )
-            if doc:
-                doc.study_objective = study_objective
+    # ── Study Brief (AI 추정 → 사용자 확인/수정) ──
+    _render_study_brief(doc)
 
     # ── 공통 Language 선택 + Generate All 버튼 ──
     col_lang, col_gen = st.columns([1, 3])
     with col_lang:
         language = st.selectbox(
-            "Language",
+            "출력 언어",
             options=["ko", "en"],
-            format_func=lambda x: "\ud55c\uad6d\uc5b4" if x == "ko" else "English",
+            format_func=lambda x: "한국어" if x == "ko" else "English",
             key="tg_language",
         )
     with col_gen:
-        st.write("")  # spacing
+        st.write("")
         st.write("")
         generate_all_clicked = st.button(
-            "Generate All",
+            "전체 생성",
             type="secondary",
-            help="Run all generation steps in parallel (Titles, Net, Banner)",
+            help="모든 생성 단계를 병렬로 실행합니다 (Title, Net, Banner)",
         )
 
     if generate_all_clicked:
@@ -1712,9 +1825,9 @@ def page_table_guide_builder():
     timing = st.session_state.get("generate_all_timing")
     if timing:
         st.success(
-            f"Generate All completed in **{timing['total']:.1f}s** — {timing['summary']}"
+            f"전체 생성 완료 — **{timing['total']:.1f}초** 소요 — {timing['summary']}"
         )
-        st.caption(f"Per-worker: {timing['details']}")
+        st.caption(f"단계별: {timing['details']}")
 
     # ── Survey Intelligence 요약 표시 ──
     intel = doc.survey_intelligence if doc else {}

@@ -2,7 +2,7 @@ import os
 import streamlit as st
 import pandas as pd
 
-EXAMPLE_TEMPLATE_PATH = "template/SurveyStream_QnrTemplate_v1.pdf"
+EXAMPLE_TEMPLATE_PATH = "template/SurveyStream_QnrTemplate_v1.docx"
 
 
 def page_user_reference():
@@ -26,7 +26,7 @@ def page_user_reference():
         st.markdown("""
         <div style="padding: 15px; border-radius: 10px; background-color: #fafafa; height: 200px; border: 1px solid #b2dfdb;">
             <h4 style="color: #00796b; margin-top: 0;">Questionnaire Analyzer</h4>
-            <p>설문지 파일(.pdf, .docx)에서 문항 번호, 텍스트, 유형을 자동으로 추출합니다. PDF는 패턴 기반, DOCX는 AI 하이브리드(패턴+LLM) 방식으로 보기, 로직, 필터까지 추출합니다.</p>
+            <p>설문지 파일(.docx)에서 문항 번호, 텍스트, 유형을 AI 기반으로 자동 추출합니다. 보기, 로직, 필터까지 추출합니다.</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -294,10 +294,9 @@ Q6_3: 1st+2nd+3rd</pre>
 
     with st.expander("추천 작업 흐름"):
         st.markdown("""
-        1.  **파일 업로드:** 사이드바에서 설문지 파일 (`.pdf` 또는 `.docx`)을 업로드합니다.
+        1.  **파일 업로드:** 사이드바에서 설문지 파일 (`.docx`)을 업로드합니다.
         2.  **Questionnaire Analyzer:**
-            - **PDF:** 자동으로 문항 번호, 텍스트, 유형이 패턴 기반으로 추출됩니다.
-            - **DOCX:** 'Extract Questions with AI' 버튼을 클릭하면 AI가 자동으로 추출합니다. 문항 번호, 텍스트, 유형뿐만 아니라 보기, 로직, 필터, 지시문까지 추출됩니다.
+            - 'Extract Questions with AI' 버튼을 클릭하면 AI가 자동으로 추출합니다. 문항 번호, 텍스트, 유형뿐만 아니라 보기, 로직, 필터, 지시문까지 추출됩니다.
             - 결과를 Spreadsheet(편집 가능 테이블)에서 확인합니다. 상세 카드뷰는 하단 Tree View expander에서 열 수 있습니다.
             - 필요시 테이블 내에서 직접 수정할 수 있습니다.
             - 하단의 `Download CSV` 또는 `Download Excel` 버튼으로 결과를 저장합니다.
@@ -320,7 +319,7 @@ Q6_3: 1st+2nd+3rd</pre>
     st.markdown("""
     <div style="padding: 15px; border-radius: 10px; background-color: #e0f7fa; margin: 20px 0; text-align: center;">
         <h4 style="margin-top: 0;">시작하기</h4>
-        <p>아래 예제 설문지(PDF)를 다운로드하여 Survey Stream의 기능을 직접 테스트해보세요.</p>
+        <p>아래 예제 설문지(DOCX)를 다운로드하여 Survey Stream의 기능을 직접 테스트해보세요.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -331,12 +330,12 @@ Q6_3: 1st+2nd+3rd</pre>
                 centered_col = st.columns([1, 2, 1])[1]
                 with centered_col:
                     st.download_button(
-                        label="예제 설문지 다운로드 (PDF)",
+                        label="예제 설문지 다운로드 (DOCX)",
                         data=file,
                         file_name=os.path.basename(EXAMPLE_TEMPLATE_PATH),
-                        mime="application/pdf",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         use_container_width=True,
-                        key="download_example_pdf"
+                        key="download_example_docx"
                     )
         except Exception as e:
             st.error(f"예제 설문지 파일을 읽는 중 오류 발생: {e}")

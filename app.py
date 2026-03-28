@@ -10,7 +10,6 @@ from pages.intelligence_dashboard import page_intelligence_dashboard
 from pages.table_guide import page_table_guide_builder
 from pages.quality_checker import page_quality_checker
 from pages.length_estimator import page_length_estimator
-from pages.translation_helper import page_translation_helper
 from pages.skip_logic_visualizer import page_skip_logic_visualizer
 from pages.path_simulator import page_path_simulator
 from pages.checklist_generator import page_checklist_generator
@@ -56,15 +55,15 @@ def _show_user_guide():
 @st.dialog("⚠️ Overwrite Session?", width="small")
 def _confirm_overwrite(filename: str, question_count: int):
     st.warning(
-        f"Current session **{filename}** ({question_count} questions) "
-        "will be replaced. Unsaved changes will be lost."
+        f"현재 세션 **{filename}** ({question_count}개 문항)이 대체됩니다. "
+        "저장하지 않은 변경사항은 사라집니다."
     )
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Cancel", use_container_width=True):
+        if st.button("취소", use_container_width=True):
             st.rerun()
     with col2:
-        if st.button("Continue", type="primary", use_container_width=True):
+        if st.button("계속 진행", type="primary", use_container_width=True):
             st.session_state['_overwrite_confirmed'] = True
             st.rerun()
 
@@ -82,12 +81,11 @@ _PAGES = [
     "---",                      # 4
     "Quality Checker",          # 5  (needs survey_doc; Grammar 포함)
     "Length Estimator",         # 6  (needs survey_doc)
-    "Translation Helper",      # 7  (needs survey_doc)
-    "---",                      # 8
-    "Skip Logic",               # 9  (needs survey_doc)
-    "Path Simulator",           # 10 (needs survey_doc)
-    "Checklist",                # 11 (needs survey_doc)
-    "Piping Intelligence",      # 12 (needs survey_doc)
+    "---",                      # 7
+    "Skip Logic",               # 8  (needs survey_doc)
+    "Path Simulator",           # 9  (needs survey_doc)
+    "Checklist",                # 10 (needs survey_doc)
+    "Piping Intelligence",      # 11 (needs survey_doc)
 ]
 
 _ICONS_UNLOCKED = [
@@ -98,12 +96,11 @@ _ICONS_UNLOCKED = [
     None,                       # 4  ---
     'bi bi-shield-check',       # 5  Quality Checker
     'bi bi-stopwatch',          # 6  Length Estimator
-    'bi bi-translate',          # 7  Translation Helper
-    None,                       # 8  ---
-    'bi bi-diagram-3',          # 9  Skip Logic
-    'bi bi-signpost-split',     # 10 Path Simulator
-    'bi bi-list-check',         # 11 Checklist
-    'bi bi-arrow-left-right',   # 12 Piping Intelligence
+    None,                       # 7  ---
+    'bi bi-diagram-3',          # 8  Skip Logic
+    'bi bi-signpost-split',     # 9  Path Simulator
+    'bi bi-list-check',         # 10 Checklist
+    'bi bi-arrow-left-right',   # 11 Piping Intelligence
 ]
 
 # ============================================================
@@ -120,8 +117,8 @@ with st.sidebar:
 
     # ── 파일 업로드 (단일: 설문지 + 세션 통합) ──
     raw_upload = st.file_uploader(
-        "Upload file (.pdf / .docx / .json)",
-        type=["pdf", "docx", "json"],
+        "파일 업로드 (.docx / .json)",
+        type=["docx", "json"],
     )
 
     if raw_upload is not None:
@@ -148,7 +145,7 @@ with st.sidebar:
                     st.session_state['uploaded_file_name'] = os.path.splitext(doc.filename)[0]
                     st.session_state['_loaded_session_key'] = _new_upload_key
                 except Exception as e:
-                    st.error(f"Failed to load session: {e}")
+                    st.error(f"세션 복원 실패: {e}")
         else:
             # ── PDF/DOCX → 설문지 업로드 ──
             uploaded_file = raw_upload
@@ -187,11 +184,10 @@ with st.sidebar:
     if not has_survey_doc:
         icons[1] = 'bi bi-lock'       # Intelligence Dashboard
         icons[6] = 'bi bi-lock'       # Length Estimator
-        icons[7] = 'bi bi-lock'       # Translation Helper
-        icons[9] = 'bi bi-lock'       # Skip Logic
-        icons[10] = 'bi bi-lock'      # Path Simulator
-        icons[11] = 'bi bi-lock'      # Checklist
-        icons[12] = 'bi bi-lock'      # Piping Intelligence
+        icons[8] = 'bi bi-lock'       # Skip Logic
+        icons[9] = 'bi bi-lock'       # Path Simulator
+        icons[10] = 'bi bi-lock'      # Checklist
+        icons[11] = 'bi bi-lock'      # Piping Intelligence
 
     page = option_menu(
         None,
@@ -241,9 +237,6 @@ elif page == 'Quality Checker':
 
 elif page == 'Length Estimator':
     page_length_estimator()
-
-elif page == 'Translation Helper':
-    page_translation_helper()
 
 elif page == 'Skip Logic':
     page_skip_logic_visualizer()

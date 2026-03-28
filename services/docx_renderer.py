@@ -39,21 +39,111 @@ def render_paragraph(para: DocxParagraph) -> str:
 
 
 def render_table(table: DocxTable) -> str:
-    """DocxTable을 마크다운 형식 테이블로 변환"""
+    """DocxTable을 LLM 친화적 텍스트로 변환.
+
+    table_type에 따라 구조화된 마커를 사용하여 LLM이 표의 역할을 정확히 파악할 수 있게 함.
+    """
     if not table.rows:
         return ""
 
-    lines = [""]  # 빈 줄로 시작
+    table_type = getattr(table, 'table_type', 'unknown')
 
-    for i, row in enumerate(table.rows):
-        line = "| " + " | ".join(cell if cell else "" for cell in row) + " |"
+    if table_type == "section_header":
+        rows = table.rows_text if hasattr(table, 'rows_text') else table.rows
+        text = (rows[0][0] if rows and rows[0] else "").strip()
+        return f"\n[SECTION: {text}]\n" if text else ""
+
+    if table_type == "coding_reference":
+        return _render_coding_ref(
+            table.rows_text if hasattr(table, 'rows_text') else table.rows
+        )
+
+    rows = table.rows_text if hasattr(table, 'rows_text') else table.rows
+    if not rows:
+        return ""
+
+    if table_type == "grid":
+        return _render_grid(rows)
+    elif table_type == "matrix":
+        return _render_matrix(rows)
+    elif table_type == "code_label":
+        return _render_code_label(rows)
+    elif table_type == "multi_question":
+        return _render_multi_question(rows)
+    else:
+        return _render_generic(rows)
+
+
+def _render_grid(rows: List[List[str]]) -> str:
+    """grid 표: [SCALE_HEADER] + [ROW] 구조화 렌더링"""
+    lines = ["\n[TABLE:grid]"]
+    scale_header = " | ".join(c for c in rows[0] if c)
+    lines.append(f"[SCALE_HEADER] {scale_header}")
+    for row in rows[1:]:
+        item = row[0].strip() if row else ""
+        if item:
+            lines.append(f"[ROW] {item}")
+    lines.append("[/TABLE]\n")
+    return "\n".join(lines)
+
+
+def _render_matrix(rows: List[List[str]]) -> str:
+    """matrix 표: [COL_HEADER] + [ROW] 구조화 렌더링"""
+    lines = ["\n[TABLE:matrix]"]
+    if rows:
+        col_header = " | ".join(c for c in rows[0] if c)
+        lines.append(f"[COL_HEADER] {col_header}")
+        for row in rows[1:]:
+            item = row[0].strip() if row else ""
+            if item:
+                lines.append(f"[ROW] {item}")
+    lines.append("[/TABLE]\n")
+    return "\n".join(lines)
+
+
+def _render_code_label(rows: List[List[str]]) -> str:
+    """code_label 표: [TABLE:options] 마크다운 렌더링"""
+    lines = ["\n[TABLE:options]"]
+    for row in rows:
+        line = "| " + " | ".join(c if c else "" for c in row) + " |"
+        lines.append(line)
+    lines.append("[/TABLE]\n")
+    return "\n".join(lines)
+
+
+def _render_multi_question(rows: List[List[str]]) -> str:
+    """multi_question 표: 각 행이 별도 문항임을 마킹"""
+    lines = ["\n[TABLE:multi_question — each row is a separate question]"]
+    for i, row in enumerate(rows):
+        line = "| " + " | ".join(c if c else "" for c in row) + " |"
         lines.append(line)
         if i == 0:
-            # 헤더 구분선
-            separator = "| " + " | ".join("---" for _ in row) + " |"
-            lines.append(separator)
+            lines.append("| " + " | ".join("---" for _ in row) + " |")
+    lines.append("[/TABLE]\n")
+    return "\n".join(lines)
 
-    lines.append("")  # 빈 줄로 끝
+
+def _render_coding_ref(rows: List[List[str]]) -> str:
+    """coding_reference 표: 내용을 보존하되 역할을 마킹"""
+    if not rows:
+        return ""
+    lines = ["\n[CODING_REF — this is a coding/variable reference, NOT answer options]"]
+    for row in rows:
+        line = "| " + " | ".join(c if c else "" for c in row) + " |"
+        lines.append(line)
+    lines.append("[/CODING_REF]\n")
+    return "\n".join(lines)
+
+
+def _render_generic(rows: List[List[str]]) -> str:
+    """generic/unknown 표: 기본 마크다운 렌더링"""
+    lines = ["\n[TABLE:info]"]
+    for i, row in enumerate(rows):
+        line = "| " + " | ".join(c if c else "" for c in row) + " |"
+        lines.append(line)
+        if i == 0:
+            lines.append("| " + " | ".join("---" for _ in row) + " |")
+    lines.append("[/TABLE]\n")
     return "\n".join(lines)
 
 
