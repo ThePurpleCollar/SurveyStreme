@@ -138,25 +138,25 @@ def _render_summary_metrics(doc: SurveyDocument, questions: List[SurveyQuestion]
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Total Questions", len(questions))
+        st.metric("전체 문항", len(questions))
     with col2:
-        st.metric("Question Types", len(type_set) if type_set else "-")
+        st.metric("문항 유형", len(type_set) if type_set else "-")
     with col3:
         loi = _estimate_loi_quick(questions)
-        st.metric("Est. LOI", f"{loi} min")
+        st.metric("예상 LOI", f"{loi}분")
     with col4:
         complexity = _skip_complexity(questions)
-        st.metric("Skip Complexity", complexity)
+        st.metric("스킵 복잡도", complexity)
 
 
 def _render_section_flow(questions: List[SurveyQuestion]) -> None:
     """Phase 5 role 기반 섹션 흐름도 (Graphviz)."""
-    st.subheader("Survey Structure Flow")
+    st.subheader("설문 구조 흐름")
 
     # role 필드가 있는 문항만 처리
     roles = [q.role for q in questions if q.role]
     if not roles:
-        st.caption("No role metadata available. Run Questionnaire Analyzer with enrichment first.")
+        st.caption("Role 메타데이터가 없습니다. 먼저 Questionnaire Analyzer에서 enrichment를 실행해주세요.")
         return
 
     # 연속 동일 role을 그룹으로 묶기
@@ -175,7 +175,7 @@ def _render_section_flow(questions: List[SurveyQuestion]) -> None:
         sections.append((current_role, current_count))
 
     if not sections:
-        st.caption("No sections detected.")
+        st.caption("섹션이 감지되지 않았습니다.")
         return
 
     # Graphviz DOT 생성
@@ -214,11 +214,11 @@ def _render_section_flow(questions: List[SurveyQuestion]) -> None:
 
 def _render_type_distribution(questions: List[SurveyQuestion]) -> None:
     """문항 유형 분포 수평 바 차트 + 테이블."""
-    st.subheader("Question Type Distribution")
+    st.subheader("문항 유형 분포")
 
     type_counter = Counter(_normalize_type(q.question_type) for q in questions)
     if not type_counter:
-        st.caption("No question type data available.")
+        st.caption("문항 유형 데이터가 없습니다.")
         return
 
     # 내림차순 정렬
@@ -237,13 +237,13 @@ def _render_type_distribution(questions: List[SurveyQuestion]) -> None:
 
 def _render_role_distribution(questions: List[SurveyQuestion]) -> None:
     """Phase 5 role & variable_type 분포."""
-    st.subheader("Role & Variable Type Distribution")
+    st.subheader("Role & Variable Type 분포")
 
     roles = [q.role for q in questions if q.role]
     var_types = [q.variable_type for q in questions if q.variable_type]
 
     if not roles and not var_types:
-        st.caption("No enrichment metadata available. Run Questionnaire Analyzer with enrichment first.")
+        st.caption("Enrichment 메타데이터가 없습니다. 먼저 Questionnaire Analyzer에서 enrichment를 실행해주세요.")
         return
 
     col_left, col_right = st.columns(2)
@@ -264,7 +264,7 @@ def _render_role_distribution(questions: List[SurveyQuestion]) -> None:
                 with col_c:
                     st.text(str(count))
         else:
-            st.caption("No role data.")
+            st.caption("Role 데이터가 없습니다.")
 
     with col_right:
         st.markdown("**Variable Type Distribution**")
@@ -282,38 +282,38 @@ def _render_role_distribution(questions: List[SurveyQuestion]) -> None:
                 with col_c:
                     st.text(str(count))
         else:
-            st.caption("No variable type data.")
+            st.caption("Variable type 데이터가 없습니다.")
 
 
 def _render_skip_logic_overview(questions: List[SurveyQuestion]) -> None:
     """스킵 로직 통계 + 미니 그래프 프리뷰."""
-    st.subheader("Skip Logic Overview")
+    st.subheader("스킵 로직 개요")
 
     graph = build_skip_logic_graph(questions)
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Questions with Skip", graph.questions_with_skip)
+        st.metric("스킵 있는 문항", graph.questions_with_skip)
     with col2:
-        st.metric("Total Skip Rules", graph.total_skip_rules)
+        st.metric("전체 스킵 규칙", graph.total_skip_rules)
     with col3:
-        st.metric("Unique Targets", graph.unique_targets)
+        st.metric("고유 타겟", graph.unique_targets)
 
     # 미니 그래프 프리뷰 (skip_only)
     if graph.questions_with_skip > 0:
         dot = generate_dot(graph, view_mode="skip_only", orientation="LR")
-        with st.expander("Skip Logic Graph Preview", expanded=False):
+        with st.expander("스킵 로직 그래프 미리보기", expanded=False):
             st.graphviz_chart(dot, use_container_width=True)
 
     if graph.unparsed_targets:
-        with st.expander(f"Unresolved Targets ({len(graph.unparsed_targets)})"):
+        with st.expander(f"미해석 타겟 ({len(graph.unparsed_targets)}건)"):
             df = pd.DataFrame(graph.unparsed_targets, columns=["Source Q#", "Raw Target"])
             st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 def _render_analytical_readiness(doc: SurveyDocument, questions: List[SurveyQuestion]) -> None:
     """배너 & 분석 준비도 정보."""
-    st.subheader("Analytical Readiness")
+    st.subheader("분석 준비도")
 
     banner_count = len(doc.banners)
     banner_points = sum(len(b.points) for b in doc.banners)
@@ -325,17 +325,17 @@ def _render_analytical_readiness(doc: SurveyDocument, questions: List[SurveyQues
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Banners", banner_count)
+        st.metric("배너", banner_count)
     with col2:
-        st.metric("Banner Points", banner_points)
+        st.metric("배너 포인트", banner_points)
     with col3:
-        st.metric("Composite Ratio", f"{composite_ratio:.0f}%")
+        st.metric("Composite 비율", f"{composite_ratio:.0f}%")
     with col4:
-        st.metric("High-Value Qs", f"{high_value} ({high_ratio:.0f}%)")
+        st.metric("고가치 문항", f"{high_value} ({high_ratio:.0f}%)")
 
     # Study metadata
     if doc.study_type or doc.client_brand or doc.study_objective:
-        with st.expander("Study Metadata", expanded=False):
+        with st.expander("스터디 메타데이터", expanded=False):
             if doc.client_brand:
                 st.markdown(f"**Client/Brand:** {doc.client_brand}")
             if doc.study_type:
@@ -353,13 +353,13 @@ def _render_quality_quick_scan() -> None:
     if 'quality_results' not in st.session_state:
         return
 
-    st.subheader("Quality Quick Scan")
+    st.subheader("품질 빠른 검사")
 
     results = st.session_state['quality_results']
     if isinstance(results, dict):
         issues = results.get('issues', [])
         if issues:
-            st.warning(f"**{len(issues)}** quality issue(s) detected. See Quality Checker for details.")
+            st.warning(f"**{len(issues)}**건의 품질 이슈가 감지되었습니다. Quality Checker에서 상세 내용을 확인하세요.")
             # 최대 5개만 표시
             for issue in issues[:5]:
                 if isinstance(issue, dict):
@@ -367,9 +367,9 @@ def _render_quality_quick_scan() -> None:
                 else:
                     st.caption(f"- {issue}")
             if len(issues) > 5:
-                st.caption(f"... and {len(issues) - 5} more")
+                st.caption(f"... 외 {len(issues) - 5}건")
         else:
-            st.success("No quality issues detected.")
+            st.success("품질 이슈가 감지되지 않았습니다.")
     elif isinstance(results, str):
         st.info(results[:500])
 
@@ -386,7 +386,7 @@ def page_intelligence_dashboard() -> None:
     # Guard clause
     if "survey_document" not in st.session_state or st.session_state["survey_document"] is None:
         st.warning(
-            'Please process a document in "Questionnaire Analyzer" first.'
+            '먼저 Questionnaire Analyzer에서 문서를 처리해주세요.'
         )
         return
 
@@ -394,10 +394,10 @@ def page_intelligence_dashboard() -> None:
     questions = doc.questions
 
     if not questions:
-        st.warning("No questions found in the document.")
+        st.warning("문서에서 문항을 찾을 수 없습니다.")
         return
 
-    st.info(f"**{doc.filename}** — {len(questions)} questions extracted")
+    st.info(f"**{doc.filename}** — {len(questions)}개 문항 추출됨")
 
     # Row 1: 핵심 지표
     _render_summary_metrics(doc, questions)

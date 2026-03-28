@@ -43,7 +43,7 @@ def _render_quality_analysis_tab():
     # Guard: survey_document 필요
     if "survey_document" not in st.session_state or st.session_state["survey_document"] is None:
         st.warning(
-            'Please process a DOCX document in "Questionnaire Analyzer" first.',
+            '먼저 Questionnaire Analyzer에서 문서를 처리해주세요.',
             icon="⚠️",
         )
         return
@@ -51,31 +51,29 @@ def _render_quality_analysis_tab():
     survey_doc = st.session_state["survey_document"]
     questions = survey_doc.questions
     if not questions:
-        st.warning("No questions found in the document.", icon="⚠️")
+        st.warning("문서에서 문항을 찾을 수 없습니다.", icon="⚠️")
         return
 
     st.info(
-        f"Found **{len(questions)}** questions in **{survey_doc.filename}**. "
-        "Select the language and click **Analyze Quality** to check question quality.",
+        f"**{survey_doc.filename}**에서 **{len(questions)}**개 문항을 발견했습니다. "
+        "언어를 선택하고 **품질 분석** 버튼을 눌러주세요.",
         icon="ℹ️",
     )
 
-    # ── 컨트롤 영역 ──
     ctrl_col1, ctrl_col2 = st.columns([1, 3])
     with ctrl_col1:
         language = st.selectbox(
-            "Analysis Language",
+            "분석 언어",
             options=["ko", "en"],
             format_func=lambda x: "한국어" if x == "ko" else "English",
         )
     with ctrl_col2:
         st.write("")  # spacing
         st.write("")
-        analyze_clicked = st.button("Analyze Quality", type="primary")
+        analyze_clicked = st.button("품질 분석", type="primary")
 
-    # ── 분석 실행 ──
     if analyze_clicked:
-        with st.status("Analyzing survey quality...", expanded=True) as status:
+        with st.status("설문 품질 분석 중...", expanded=True) as status:
             progress_bar = st.progress(0)
             log_area = st.empty()
             batch_done_count = [0]
@@ -85,16 +83,16 @@ def _render_quality_analysis_tab():
                 if event == "batch_start":
                     total_batches[0] = data["total_batches"]
                     log_area.text(
-                        f"Processing batch {data['batch_index'] + 1}/{data['total_batches']} "
-                        f"({data['question_count']} questions)..."
+                        f"배치 {data['batch_index'] + 1}/{data['total_batches']} 처리 중 "
+                        f"({data['question_count']}개 문항)..."
                     )
                 elif event == "batch_done":
                     batch_done_count[0] += 1
                     progress = batch_done_count[0] / total_batches[0]
                     progress_bar.progress(progress)
                     log_area.text(
-                        f"Batch {data['batch_index'] + 1}/{data['total_batches']} done "
-                        f"({data['issues_found']} issues found)"
+                        f"배치 {data['batch_index'] + 1}/{data['total_batches']} 완료 "
+                        f"({data['issues_found']}건 발견)"
                     )
 
             results = check_survey_quality(
@@ -108,7 +106,7 @@ def _render_quality_analysis_tab():
 
             total_issues = sum(len(r.issues) for r in results)
             status.update(
-                label=f"Analysis complete! Found {total_issues} issues.",
+                label=f"분석 완료! {total_issues}건의 이슈를 발견했습니다.",
                 state="complete",
             )
 
@@ -128,7 +126,7 @@ def _render_quality_analysis_tab():
     severity_options = SEVERITIES.copy()
     severity_display = {s: SEVERITY_LABELS[lang][s] for s in severity_options}
     selected_severities = st.multiselect(
-        "Filter by severity",
+        "심각도 필터",
         options=severity_options,
         default=severity_options,
         format_func=lambda x: severity_display[x],
@@ -171,24 +169,23 @@ def _render_quality_dashboard(results: List[QuestionQualityResult], lang: str):
     # 메트릭 카드
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Total Questions", total_questions)
+        st.metric("전체 문항", total_questions)
     with col2:
-        st.metric("Critical", critical_count)
+        st.metric("심각", critical_count)
     with col3:
-        st.metric("Warning", warning_count)
+        st.metric("경고", warning_count)
     with col4:
-        st.metric("Info", info_count)
+        st.metric("정보", info_count)
 
     if not all_issues:
-        st.success("No quality issues detected!", icon="✅")
+        st.success("품질 이슈가 감지되지 않았습니다!", icon="✅")
         return
 
     st.caption(
-        f"{questions_with_issues} out of {total_questions} questions have issues"
+        f"전체 {total_questions}개 문항 중 {questions_with_issues}개에서 이슈 발견"
     )
 
-    # 카테고리별 분포
-    st.subheader("Category Breakdown")
+    st.subheader("카테고리별 분포")
     cat_labels = CATEGORY_LABELS[lang]
     cat_counts = {cat: 0 for cat in CATEGORIES}
     for iss in all_issues:
@@ -212,7 +209,7 @@ def _render_quality_dashboard(results: List[QuestionQualityResult], lang: str):
 
 def _render_issue_cards(results: List[QuestionQualityResult], lang: str):
     """문항별 이슈 카드 렌더링."""
-    st.subheader("Question Details")
+    st.subheader("문항별 상세")
 
     cat_labels = CATEGORY_LABELS[lang]
     sev_labels = SEVERITY_LABELS[lang]
@@ -246,7 +243,7 @@ def _render_issue_cards(results: List[QuestionQualityResult], lang: str):
 
         with st.expander(label, expanded=has_issues):
             if not result.issues:
-                st.success("No quality issues found.", icon="✅")
+                st.success("품질 이슈 없음", icon="✅")
             else:
                 for issue in result.issues:
                     badge = severity_badge.get(issue.severity, "")
@@ -266,23 +263,22 @@ def _render_grammar_correction_tab():
     """Grammar Correction 탭 전체 렌더링."""
     # Guard: edited_df 필요
     if "edited_df" not in st.session_state or st.session_state["edited_df"] is None or st.session_state["edited_df"].empty:
-        st.warning('Please process a document in "Questionnaire Analyzer" first.', icon="⚠️")
+        st.warning('먼저 Questionnaire Analyzer에서 문서를 처리해주세요.', icon="⚠️")
         return
 
     df = st.session_state["edited_df"]
     total_questions = df["QuestionNumber"].nunique()
 
     st.info(
-        f"Found **{total_questions}** unique questions. "
-        "Select the language and click **Grammar Check** to correct grammar.",
+        f"고유 문항 **{total_questions}**개를 발견했습니다. "
+        "언어를 선택하고 **문법 검사** 버튼을 눌러주세요.",
         icon="ℹ️",
     )
 
-    # ── 컨트롤 영역 ──
     ctrl_col1, ctrl_col2 = st.columns([1, 3])
     with ctrl_col1:
         language = st.selectbox(
-            "Language",
+            "언어",
             options=["ko", "en"],
             format_func=lambda x: "한국어" if x == "ko" else "English",
             key="grammar_language_select",
@@ -290,11 +286,10 @@ def _render_grammar_correction_tab():
     with ctrl_col2:
         st.write("")
         st.write("")
-        check_clicked = st.button("Grammar Check", type="primary", key="grammar_check_btn")
+        check_clicked = st.button("문법 검사", type="primary", key="grammar_check_btn")
 
-    # ── 문법 검사 실행 ──
     if check_clicked:
-        with st.status("Checking grammar...", expanded=True) as status:
+        with st.status("문법 검사 중...", expanded=True) as status:
             progress_bar = st.progress(0)
             log_area = st.empty()
             batch_done_count = [0]
@@ -304,27 +299,26 @@ def _render_grammar_correction_tab():
                 if event == "batch_start":
                     total_batches[0] = data["total_batches"]
                     log_area.text(
-                        f"Processing batch {data['batch_index'] + 1}/{data['total_batches']} "
-                        f"({data['question_count']} questions)..."
+                        f"배치 {data['batch_index'] + 1}/{data['total_batches']} 처리 중 "
+                        f"({data['question_count']}개 문항)..."
                     )
                 elif event == "batch_done":
                     batch_done_count[0] += 1
                     progress = batch_done_count[0] / total_batches[0]
                     progress_bar.progress(progress)
                     log_area.text(
-                        f"Batch {data['batch_index'] + 1}/{data['total_batches']} done "
-                        f"({data['changed_count']} corrected)"
+                        f"배치 {data['batch_index'] + 1}/{data['total_batches']} 완료 "
+                        f"({data['changed_count']}개 교정)"
                     )
 
             results = check_grammar(df, language, _progress_callback)
             st.session_state["grammar_results"] = results
 
-            # 결과를 edited_df에 적용
             apply_grammar_results(results)
 
             changed_count = sum(1 for r in results if r["has_changes"])
             status.update(
-                label=f"Grammar check complete! {changed_count}/{len(results)} questions corrected.",
+                label=f"문법 검사 완료! {changed_count}/{len(results)}개 문항 교정됨.",
                 state="complete",
             )
 
@@ -349,8 +343,9 @@ def _render_grammar_correction_tab():
 
     # ── Filter ──
     filter_mode = st.radio(
-        "Filter",
+        "필터",
         options=["All", "Changed Only", "Unchanged Only"],
+        format_func=lambda x: {"All": "전체", "Changed Only": "교정된 항목만", "Unchanged Only": "변경 없음만"}[x],
         horizontal=True,
         key="grammar_filter_radio",
     )
@@ -361,7 +356,7 @@ def _render_grammar_correction_tab():
     st.divider()
 
     # ── Editable Table ──
-    st.subheader("Editable Table")
+    st.subheader("편집 테이블")
     _render_grammar_editable_table()
 
     # ── Download ──
@@ -377,13 +372,13 @@ def _render_grammar_dashboard(results: list):
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Total Questions", total)
+        st.metric("전체 문항", total)
     with col2:
-        st.metric("Corrected", changed)
+        st.metric("교정됨", changed)
     with col3:
-        st.metric("No Changes", unchanged)
+        st.metric("변경 없음", unchanged)
     with col4:
-        st.metric("Errors", errors)
+        st.metric("오류", errors)
 
 
 def _render_grammar_comparison(results: list, filter_mode: str):
@@ -395,7 +390,7 @@ def _render_grammar_comparison(results: list, filter_mode: str):
         filtered = [r for r in results if not r["has_changes"]]
 
     if not filtered:
-        st.info("No questions match the selected filter.")
+        st.info("선택한 필터에 해당하는 문항이 없습니다.")
         return
 
     for r in filtered:
@@ -417,10 +412,10 @@ def _render_grammar_comparison(results: list, filter_mode: str):
             if has_changes:
                 col_orig, col_corr = st.columns(2)
                 with col_orig:
-                    st.markdown("**Original**")
+                    st.markdown("**원본**")
                     st.text(r["original_text"])
                 with col_corr:
-                    st.markdown("**Corrected**")
+                    st.markdown("**교정**")
                     st.text(r["corrected_text"])
 
                 # 보기 비교 (변경된 경우)
@@ -428,17 +423,17 @@ def _render_grammar_comparison(results: list, filter_mode: str):
                     st.markdown("---")
                     col_o2, col_c2 = st.columns(2)
                     with col_o2:
-                        st.markdown("**Original Options**")
+                        st.markdown("**원본 보기**")
                         st.text(r["original_options"])
                     with col_c2:
-                        st.markdown("**Corrected Options**")
+                        st.markdown("**교정된 보기**")
                         for opt in r["corrected_options"]:
                             st.text(f"{opt['code']}. {opt['label']}")
 
                 if summary:
                     st.caption(f"Changes: {summary}")
             else:
-                st.success("No grammar issues found.", icon="✅")
+                st.success("문법 이슈 없음", icon="✅")
 
 
 def _render_grammar_editable_table():
@@ -465,7 +460,7 @@ def _render_grammar_editable_table():
         use_container_width=True,
     )
 
-    if st.button("Apply Edits", type="primary", key="apply_grammar_edits"):
+    if st.button("수정사항 적용", type="primary", key="apply_grammar_edits"):
         for col in display_cols:
             st.session_state["edited_df"][col] = edited[col]
 
@@ -476,5 +471,5 @@ def _render_grammar_editable_table():
                 if q.question_number in qn_to_gc:
                     q.grammar_checked = str(qn_to_gc[q.question_number])
 
-        st.success("Edits applied successfully!", icon="✅")
+        st.success("수정사항이 적용되었습니다!", icon="✅")
         st.rerun()

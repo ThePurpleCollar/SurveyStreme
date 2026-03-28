@@ -29,7 +29,7 @@ def page_piping_intelligence() -> None:
     # Guard clause
     if "survey_document" not in st.session_state or st.session_state["survey_document"] is None:
         st.warning(
-            'Please process a document in "Questionnaire Analyzer" first.'
+            '먼저 Questionnaire Analyzer에서 문서를 처리해주세요.'
         )
         return
 
@@ -37,29 +37,29 @@ def page_piping_intelligence() -> None:
     questions = doc.questions
 
     if not questions:
-        st.warning("No questions found in the document.")
+        st.warning("문서에서 문항을 찾을 수 없습니다.")
         return
 
     st.info(
-        f"Found **{len(questions)}** questions in **{doc.filename}**. "
-        "Analyze piping dependencies, filter chains, and potential issues."
+        f"**{doc.filename}**에서 **{len(questions)}**개 문항을 발견했습니다. "
+        "파이핑 의존성, 필터 체인, 잠재적 이슈를 분석합니다."
     )
 
     # Controls
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 2, 2])
     with ctrl_col1:
         include_implicit = st.checkbox(
-            "Include Implicit Piping (LLM)",
+            "암시적 파이핑 포함 (LLM)",
             value=False,
-            help="Use LLM to detect implicit piping references. Slower but more thorough.",
+            help="LLM을 사용하여 암시적 파이핑 참조를 감지합니다. 더 느리지만 더 철저합니다.",
             key="piping_include_implicit",
         )
     with ctrl_col3:
-        analyze_clicked = st.button("Analyze", type="primary")
+        analyze_clicked = st.button("분석", type="primary")
 
     # Run analysis
     if analyze_clicked:
-        with st.status("Analyzing piping dependencies...", expanded=True) as status:
+        with st.status("파이핑 의존성 분석 중...", expanded=True) as status:
             progress_bar = st.progress(0)
             log_area = st.empty()
 
@@ -67,21 +67,21 @@ def page_piping_intelligence() -> None:
                 if event == "phase":
                     if data["status"] == "start":
                         if data["name"] == "text_piping":
-                            log_area.text("Detecting text & code piping, filter dependencies...")
+                            log_area.text("텍스트 & 코드 파이핑, 필터 의존성 감지 중...")
                         elif data["name"] == "implicit_piping":
-                            log_area.text("Detecting implicit piping (LLM)...")
+                            log_area.text("암시적 파이핑 감지 중 (LLM)...")
                             progress_bar.progress(0.3)
                     elif data["status"] == "done":
                         if data["name"] == "text_piping":
-                            log_area.text(f"Algorithmic detection done ({data['count']} refs)")
+                            log_area.text(f"알고리즘 감지 완료 ({data['count']}건)")
                             progress_bar.progress(0.3 if include_implicit else 0.8)
                         elif data["name"] == "implicit_piping":
-                            log_area.text(f"Implicit detection done ({data['count']} refs)")
+                            log_area.text(f"암시적 감지 완료 ({data['count']}건)")
                             progress_bar.progress(0.8)
                 elif event == "batch_start":
                     total = data["total_batches"]
                     idx = data["batch_index"]
-                    log_area.text(f"LLM batch {idx + 1}/{total} ({data['question_count']} questions)...")
+                    log_area.text(f"LLM 배치 {idx + 1}/{total} ({data['question_count']}개 문항)...")
                 elif event == "batch_done":
                     total = data["total_batches"]
                     idx = data["batch_index"]
@@ -101,7 +101,7 @@ def page_piping_intelligence() -> None:
             total_refs = len(result.piping_refs)
             total_issues = len(result.issues)
             status.update(
-                label=f"Done! {total_refs} references, {total_issues} issues found.",
+                label=f"완료! {total_refs}건의 참조, {total_issues}건의 이슈 발견.",
                 state="complete",
             )
 
@@ -120,10 +120,10 @@ def page_piping_intelligence() -> None:
 
     # Tabs
     tab1, tab2, tab3, tab4 = st.tabs([
-        "Dependency Graph",
-        "Filter Chains",
-        "Issues",
-        "All References",
+        "의존성 그래프",
+        "필터 체인",
+        "이슈",
+        "전체 참조",
     ])
 
     with tab1:
@@ -155,21 +155,21 @@ def _render_dashboard(result: PipingAnalysisResult) -> None:
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Piping Refs", piping_count)
+        st.metric("파이핑 참조", piping_count)
     with col2:
-        st.metric("Filter Deps", filter_count)
+        st.metric("필터 의존성", filter_count)
     with col3:
         error_count = sum(1 for i in result.issues if i.severity == "error")
-        st.metric("Issues", issue_count, delta=f"{error_count} errors" if error_count else None,
+        st.metric("이슈", issue_count, delta=f"{error_count}건 오류" if error_count else None,
                   delta_color="inverse" if error_count else "off")
     with col4:
-        st.metric("Bottlenecks", bottleneck_count)
+        st.metric("병목", bottleneck_count)
 
 
 def _render_dependency_graph(result: PipingAnalysisResult, questions) -> None:
     """의존성 그래프 (Graphviz + 유형별 필터)."""
     if not result.piping_refs:
-        st.info("No piping references detected.")
+        st.info("파이핑 참조가 감지되지 않았습니다.")
         return
 
     # 유형별 필터
@@ -177,7 +177,7 @@ def _render_dependency_graph(result: PipingAnalysisResult, questions) -> None:
     type_labels = [_PIPE_TYPE_LABELS.get(t, t) for t in available_types]
 
     selected_labels = st.multiselect(
-        "Show Types",
+        "유형 표시",
         options=type_labels,
         default=type_labels,
         key="piping_graph_filter",
@@ -188,7 +188,7 @@ def _render_dependency_graph(result: PipingAnalysisResult, questions) -> None:
     show_types = [label_to_type.get(lbl, lbl) for lbl in selected_labels]
 
     if not show_types:
-        st.caption("Select at least one type to display the graph.")
+        st.caption("그래프를 표시하려면 하나 이상의 유형을 선택하세요.")
         return
 
     dot = generate_piping_dot(result.piping_refs, questions, show_types=show_types)
@@ -209,10 +209,10 @@ def _render_dependency_graph(result: PipingAnalysisResult, questions) -> None:
 def _render_filter_chains(result: PipingAnalysisResult) -> None:
     """필터 체인 트리 + 병목 문항."""
     if not result.filter_chains:
-        st.info("No filter chains detected.")
+        st.info("필터 체인이 감지되지 않았습니다.")
         return
 
-    st.subheader("Filter Chains")
+    st.subheader("필터 체인")
 
     for chain in result.filter_chains:
         with st.expander(
@@ -226,8 +226,8 @@ def _render_filter_chains(result: PipingAnalysisResult) -> None:
 
     # 병목 문항
     if result.bottleneck_questions:
-        st.subheader("Bottleneck Questions")
-        st.caption("Questions with the most dependent questions.")
+        st.subheader("병목 문항")
+        st.caption("의존 문항이 가장 많은 문항입니다.")
 
         rows = [{"Q#": qn, "Dependent Count": count}
                 for qn, count in result.bottleneck_questions[:10]]
@@ -238,10 +238,10 @@ def _render_filter_chains(result: PipingAnalysisResult) -> None:
 def _render_issues(result: PipingAnalysisResult) -> None:
     """이슈 테이블 (severity 뱃지)."""
     if not result.issues:
-        st.success("No piping issues detected.")
+        st.success("파이핑 이슈가 감지되지 않았습니다.")
         return
 
-    st.subheader(f"Issues ({len(result.issues)})")
+    st.subheader(f"이슈 ({len(result.issues)}건)")
 
     _SEVERITY_COLORS = {
         "error": "#FF4B4B",
@@ -258,16 +258,16 @@ def _render_issues(result: PipingAnalysisResult) -> None:
             unsafe_allow_html=True,
         )
         if issue.involved_questions:
-            st.caption(f"Involved: {', '.join(issue.involved_questions)}")
+            st.caption(f"관련 문항: {', '.join(issue.involved_questions)}")
 
 
 def _render_all_references(result: PipingAnalysisResult) -> None:
     """전체 참조 테이블 + Excel 다운로드."""
     if not result.piping_refs:
-        st.info("No piping references detected.")
+        st.info("파이핑 참조가 감지되지 않았습니다.")
         return
 
-    st.subheader(f"All References ({len(result.piping_refs)})")
+    st.subheader(f"전체 참조 ({len(result.piping_refs)}건)")
 
     rows = []
     for ref in result.piping_refs:
@@ -299,7 +299,7 @@ def _render_all_references(result: PipingAnalysisResult) -> None:
     buffer.seek(0)
 
     st.download_button(
-        label="Download References (Excel)",
+        label="참조 다운로드 (Excel)",
         data=buffer,
         file_name="piping_references.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

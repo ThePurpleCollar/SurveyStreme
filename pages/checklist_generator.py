@@ -27,38 +27,38 @@ def page_checklist_generator():
     # Guard clause
     if "survey_document" not in st.session_state or st.session_state["survey_document"] is None:
         st.warning(
-            'Please process a DOCX document in "Questionnaire Analyzer" first.',
+            '먼저 Questionnaire Analyzer에서 문서를 처리해주세요.',
         )
         return
 
     survey_doc = st.session_state["survey_document"]
     questions = survey_doc.questions
     if not questions:
-        st.warning("No questions found in the document.")
+        st.warning("문서에서 문항을 찾을 수 없습니다.")
         return
 
     st.info(
-        f"Found **{len(questions)}** questions in **{survey_doc.filename}**. "
-        "Select the language and click **Generate Checklist** to create link-test checklist items.",
+        f"**{survey_doc.filename}**에서 **{len(questions)}**개 문항을 발견했습니다. "
+        "언어를 선택하고 **체크리스트 생성** 버튼을 클릭하세요.",
     )
 
     # Controls
     ctrl_col1, ctrl_col2 = st.columns([1, 3])
     with ctrl_col1:
         language = st.selectbox(
-            "Language",
+            "언어",
             options=["ko", "en"],
-            format_func=lambda x: "Korean" if x == "ko" else "English",
+            format_func=lambda x: "한국어" if x == "ko" else "English",
             key="checklist_language",
         )
     with ctrl_col2:
         st.write("")
         st.write("")
-        generate_clicked = st.button("Generate Checklist", type="primary")
+        generate_clicked = st.button("체크리스트 생성", type="primary")
 
     # Generate
     if generate_clicked:
-        with st.status("Generating checklist...", expanded=True) as status:
+        with st.status("체크리스트 생성 중...", expanded=True) as status:
             progress_bar = st.progress(0)
             log_area = st.empty()
             batch_done = [0]
@@ -68,21 +68,21 @@ def page_checklist_generator():
                 if event == "phase":
                     if data["status"] == "start":
                         if data["name"] == "algorithmic":
-                            log_area.text("Running algorithmic checks...")
+                            log_area.text("알고리즘 검사 실행 중...")
                         elif data["name"] == "llm":
-                            log_area.text("Running LLM analysis (piping & scales)...")
+                            log_area.text("LLM 분석 실행 중 (파이핑 & 척도)...")
                             progress_bar.progress(0.3)
                     elif data["status"] == "done":
                         if data["name"] == "algorithmic":
-                            log_area.text(f"Algorithmic checks done ({data['count']} items)")
+                            log_area.text(f"알고리즘 검사 완료 ({data['count']}건)")
                             progress_bar.progress(0.3)
                         elif data["name"] == "llm":
                             progress_bar.progress(1.0)
                 elif event == "batch_start":
                     total_batches[0] = data["total_batches"]
                     log_area.text(
-                        f"LLM batch {data['batch_index'] + 1}/{data['total_batches']} "
-                        f"({data['question_count']} questions)..."
+                        f"LLM 배치 {data['batch_index'] + 1}/{data['total_batches']} "
+                        f"({data['question_count']}개 문항)..."
                     )
                 elif event == "batch_done":
                     batch_done[0] += 1
@@ -98,7 +98,7 @@ def page_checklist_generator():
             st.session_state["checklist_result"] = result
 
             status.update(
-                label=f"Done! Generated {len(result.items)} checklist items.",
+                label=f"완료! {len(result.items)}건의 체크리스트 항목 생성됨.",
                 state="complete",
             )
 
@@ -110,7 +110,7 @@ def page_checklist_generator():
     lang = result.language
 
     if not result.items:
-        st.success("Checklist analysis complete — no issues detected in the survey.")
+        st.success("체크리스트 분석 완료 — 설문에서 이슈가 감지되지 않았습니다.")
         return
 
     st.divider()
@@ -141,7 +141,7 @@ def _render_dashboard(result: ChecklistResult, lang: str):
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Total Items", len(result.items))
+        st.metric("전체 항목", len(result.items))
     with col2:
         st.metric(
             PRIORITY_LABELS[lang].get("HIGH", "High"),
@@ -161,7 +161,7 @@ def _render_dashboard(result: ChecklistResult, lang: str):
 
 def _render_category_chart(result: ChecklistResult, lang: str):
     """카테고리별 분포 막대 차트."""
-    st.subheader("Category Distribution")
+    st.subheader("카테고리 분포")
 
     cat_counts = result.count_by_category()
     cat_labels = CATEGORY_LABELS.get(lang, CATEGORY_LABELS["en"])
@@ -184,7 +184,7 @@ def _render_category_chart(result: ChecklistResult, lang: str):
             st.text(str(count))
 
     if not has_items:
-        st.caption("No items to display.")
+        st.caption("표시할 항목이 없습니다.")
 
 
 def _render_filters(result: ChecklistResult, lang: str) -> List[ChecklistItem]:
@@ -195,7 +195,7 @@ def _render_filters(result: ChecklistResult, lang: str) -> List[ChecklistItem]:
     col1, col2 = st.columns(2)
     with col1:
         selected_priorities = st.multiselect(
-            "Filter by Priority",
+            "우선순위 필터",
             options=PRIORITIES,
             default=PRIORITIES,
             format_func=lambda x: pri_labels.get(x, x),
@@ -206,7 +206,7 @@ def _render_filters(result: ChecklistResult, lang: str) -> List[ChecklistItem]:
         existing_cats = [cat for cat in CATEGORIES
                          if any(i.category == cat for i in result.items)]
         selected_categories = st.multiselect(
-            "Filter by Category",
+            "카테고리 필터",
             options=existing_cats,
             default=existing_cats,
             format_func=lambda x: cat_labels.get(x, x),
@@ -222,10 +222,10 @@ def _render_filters(result: ChecklistResult, lang: str) -> List[ChecklistItem]:
 
 def _render_detail_table(items: List[ChecklistItem], lang: str):
     """체크리스트 상세 테이블."""
-    st.subheader(f"Checklist Items ({len(items)})")
+    st.subheader(f"체크리스트 항목 ({len(items)}건)")
 
     if not items:
-        st.info("No items match the current filters.")
+        st.info("현재 필터에 해당하는 항목이 없습니다.")
         return
 
     cat_labels = CATEGORY_LABELS.get(lang, CATEGORY_LABELS["en"])
@@ -286,7 +286,7 @@ def _render_download(result: ChecklistResult):
     buffer.seek(0)
 
     st.download_button(
-        label="Download Checklist (Excel)",
+        label="체크리스트 다운로드 (Excel)",
         data=buffer,
         file_name="link_test_checklist.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

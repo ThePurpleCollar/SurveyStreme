@@ -25,25 +25,25 @@ def page_path_simulator():
     # Guard clause
     if "survey_document" not in st.session_state or st.session_state["survey_document"] is None:
         st.warning(
-            'Please process a DOCX document in "Questionnaire Analyzer" first.',
+            '먼저 Questionnaire Analyzer에서 문서를 처리해주세요.',
         )
         return
 
     survey_doc = st.session_state["survey_document"]
     questions = survey_doc.questions
     if not questions:
-        st.warning("No questions found in the document.")
+        st.warning("문서에서 문항을 찾을 수 없습니다.")
         return
 
     st.info(
-        f"Found **{len(questions)}** questions in **{survey_doc.filename}**. "
-        "Click **Analyze Paths** to simulate all possible survey paths.",
+        f"**{survey_doc.filename}**에서 **{len(questions)}**개 문항을 발견했습니다. "
+        "**경로 분석** 버튼을 클릭하여 모든 설문 경로를 시뮬레이션하세요.",
     )
 
     # Analyze button
-    if st.button("Analyze Paths", type="primary"):
+    if st.button("경로 분석", type="primary"):
         st.session_state.pop("traced_path", None)
-        with st.spinner("Analyzing paths..."):
+        with st.spinner("경로 분석 중..."):
             result = simulate_paths(questions)
             st.session_state["path_simulator_result"] = result
 
@@ -65,7 +65,7 @@ def page_path_simulator():
 
     # Tabs
     tab_scenarios, tab_tracer, tab_paths = st.tabs(
-        ["Test Scenarios", "Interactive Tracer", "All Paths"]
+        ["테스트 시나리오", "인터랙티브 추적기", "전체 경로"]
     )
 
     with tab_scenarios:
@@ -82,13 +82,13 @@ def _render_dashboard(result: SimulationResult):
     """요약 메트릭 4칸."""
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Total Paths", result.total_paths)
+        st.metric("전체 경로", result.total_paths)
     with col2:
-        st.metric("Longest Path", result.max_path_length)
+        st.metric("최장 경로", result.max_path_length)
     with col3:
-        st.metric("Shortest Path", result.min_path_length)
+        st.metric("최단 경로", result.min_path_length)
     with col4:
-        st.metric("Branch Coverage", f"{result.branch_coverage_percent:.0f}%")
+        st.metric("분기 커버리지", f"{result.branch_coverage_percent:.0f}%")
 
 
 def _render_graph_warnings(result: SimulationResult):
@@ -98,19 +98,19 @@ def _render_graph_warnings(result: SimulationResult):
     if analysis.unreachable_questions:
         qns = ", ".join(analysis.unreachable_questions)
         st.warning(
-            f"**Unreachable questions detected:** {qns}\n\n"
-            "These questions cannot be reached from the first question through any path.",
+            f"**도달 불가 문항 감지:** {qns}\n\n"
+            "이 문항들은 첫 번째 문항에서 어떤 경로로도 도달할 수 없습니다.",
         )
 
     if analysis.loop_detected:
         for loop in analysis.loop_details[:3]:
             cycle = " -> ".join(loop)
-            st.warning(f"**Loop detected:** {cycle}")
+            st.warning(f"**루프 감지:** {cycle}")
 
     if result.unparsed_conditions:
         items = [f"- **{qn}**: `{cond}`" for qn, cond in result.unparsed_conditions[:10]]
         st.info(
-            f"**{len(result.unparsed_conditions)}** skip condition(s) could not be parsed:\n\n"
+            f"**{len(result.unparsed_conditions)}**건의 스킵 조건을 파싱할 수 없습니다:\n\n"
             + "\n".join(items),
         )
 
@@ -120,10 +120,10 @@ def _render_test_scenarios(result: SimulationResult):
     scenarios = result.test_scenarios
 
     if not scenarios:
-        st.info("No test scenarios generated (no skip logic found).")
+        st.info("테스트 시나리오가 생성되지 않았습니다 (스킵 로직 없음).")
         return
 
-    st.subheader(f"Test Scenarios ({len(scenarios)})")
+    st.subheader(f"테스트 시나리오 ({len(scenarios)}건)")
 
     rows = []
     for ts in scenarios:
@@ -164,7 +164,7 @@ def _render_test_scenarios(result: SimulationResult):
     df.to_excel(buffer, index=False, sheet_name="Test Scenarios")
     buffer.seek(0)
     st.download_button(
-        label="Download Scenarios (Excel)",
+        label="시나리오 다운로드 (Excel)",
         data=buffer,
         file_name="test_scenarios.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -173,8 +173,8 @@ def _render_test_scenarios(result: SimulationResult):
 
 def _render_interactive_tracer(questions):
     """인터랙티브 경로 추적기."""
-    st.subheader("Interactive Tracer")
-    st.caption("Select answers for questions with skip logic, then click 'Trace Path'.")
+    st.subheader("인터랙티브 추적기")
+    st.caption("스킵 로직이 있는 문항에 대해 응답을 선택한 후 '경로 추적' 버튼을 클릭하세요.")
 
     graph = build_skip_logic_graph(questions)
 
@@ -182,8 +182,8 @@ def _render_interactive_tracer(questions):
     questions_with_skip = [q for q in questions if q.skip_logic]
 
     if not questions_with_skip:
-        st.info("No questions with skip logic found. The path is purely sequential.")
-        if st.button("Show Sequential Path", key="trace_sequential"):
+        st.info("스킵 로직이 있는 문항이 없습니다. 경로가 순차적입니다.")
+        if st.button("순차 경로 표시", key="trace_sequential"):
             path = trace_path(questions, graph, {})
             _render_traced_path(path)
         return
@@ -191,7 +191,7 @@ def _render_interactive_tracer(questions):
     answer_selections: dict = {}
 
     for q in questions_with_skip:
-        options = ["(No selection)"]
+        options = ["(선택 안 함)"]
         if q.answer_options:
             options += [f"{o.code}. {o.label}" for o in q.answer_options]
         else:
@@ -214,12 +214,12 @@ def _render_interactive_tracer(questions):
             key=f"tracer_{q.question_number}",
         )
 
-        if selected and selected != "(No selection)":
+        if selected and selected != "(선택 안 함)":
             # 코드만 추출 ("1. 매우 그렇다" → "1")
             code = selected.split(".")[0].strip()
             answer_selections[q.question_number] = code
 
-    if st.button("Trace Path", type="primary", key="trace_btn"):
+    if st.button("경로 추적", type="primary", key="trace_btn"):
         path = trace_path(questions, graph, answer_selections)
         st.session_state["traced_path"] = path
 
@@ -230,7 +230,7 @@ def _render_interactive_tracer(questions):
 def _render_traced_path(path: SimulatedPath):
     """추적 결과 경로 표시."""
     st.divider()
-    st.subheader(f"Traced Path ({path.length} steps)")
+    st.subheader(f"추적 경로 ({path.length}단계)")
 
     # 경로 요약
     qn_display = " -> ".join(path.question_numbers[:15])
@@ -255,13 +255,13 @@ def _render_all_paths(result: SimulationResult):
     paths = result.all_paths
 
     if not paths:
-        st.info("No paths found.")
+        st.info("경로를 찾을 수 없습니다.")
         return
 
-    st.subheader(f"All Paths ({len(paths)})")
+    st.subheader(f"전체 경로 ({len(paths)}건)")
 
     if len(paths) > 50:
-        st.caption(f"Showing first 50 of {len(paths)} paths.")
+        st.caption(f"{len(paths)}개 경로 중 처음 50개를 표시합니다.")
         paths_to_show = paths[:50]
     else:
         paths_to_show = paths

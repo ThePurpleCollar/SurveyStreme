@@ -17,7 +17,7 @@ def render_spreadsheet_view(survey_doc: SurveyDocument) -> pd.DataFrame:
     df = survey_doc.to_dataframe()
 
     if df.empty:
-        st.info("No data to display.")
+        st.info("표시할 데이터가 없습니다.")
         return df
 
     # 표시할 컬럼 순서

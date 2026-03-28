@@ -178,7 +178,7 @@ def render_download_buttons(page_name: str, include_excel: bool = False):
         col1, col2 = st.columns(2)
         with col1:
             st.download_button(
-                label="Download CSV",
+                label="CSV 다운로드",
                 data=csv_bytes,
                 file_name=csv_filename,
                 mime='text/csv',
@@ -187,14 +187,14 @@ def render_download_buttons(page_name: str, include_excel: bool = False):
             excel_data = prepare_excel_download(st.session_state['survey_document'])
             excel_filename = f"{base_name}_{page_name}.xlsx"
             st.download_button(
-                label="Download Excel",
+                label="Excel 다운로드",
                 data=excel_data,
                 file_name=excel_filename,
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             )
     else:
         st.download_button(
-            label="Download CSV",
+            label="CSV 다운로드",
             data=csv_bytes,
             file_name=csv_filename,
             mime='text/csv',

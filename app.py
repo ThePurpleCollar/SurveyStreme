@@ -161,9 +161,9 @@ with st.sidebar:
     # ── 문서 상태 뱃지 + Save Session ──
     if 'survey_document' in st.session_state:
         doc = st.session_state['survey_document']
-        st.success(f"**{doc.filename}** — {len(doc.questions)} questions")
+        st.success(f"**{doc.filename}** — {len(doc.questions)}개 문항")
         st.download_button(
-            label="Save Session",
+            label="세션 저장",
             data=doc.to_json_bytes(),
             file_name=f"{os.path.splitext(doc.filename)[0]}_session.json",
             mime='application/json',
@@ -216,7 +216,7 @@ with st.sidebar:
     st.divider()
 
     # ── 하단 도움말 ──
-    if st.button("Help & User Guide", use_container_width=True):
+    if st.button("도움말 & 사용자 가이드", use_container_width=True):
         _show_user_guide()
 
 # ============================================================
