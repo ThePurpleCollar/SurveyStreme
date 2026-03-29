@@ -64,7 +64,6 @@ CATEGORY_LABELS = {
     "option_code": "보기 코드",
     "skip_logic": "스킵 로직",
     "filter": "필터 조건",
-    "dead_end": "데드엔드",
     "duplicate_qn": "문항번호 중복",
     "type_mismatch": "유형-보기 불일치",
     "typo": "오타/문법",
@@ -240,48 +239,7 @@ def run_algorithmic_checks(questions: List[SurveyQuestion]) -> ReviewReport:
                 detail=f"주관식(OE) 문항인데 보기가 {opt_count}개 있습니다. 의도된 것인지 확인해주세요.",
             ))
 
-    # ── 6. 데드엔드 검출 (간이) ──
-    # 스킵 로직으로 건너뛰는 범위 내에 도달 불가능한 문항이 있는지
-    q_order = [q.question_number for q in questions if q.question_number not in seen_qns
-               or seen_qns.get(q.question_number) is q]
-    # 중복 제거한 순서
-    seen_order = set()
-    ordered_qns = []
-    for qn in q_order:
-        if qn not in seen_order:
-            seen_order.add(qn)
-            ordered_qns.append(qn)
-
-    qn_index = {qn: i for i, qn in enumerate(ordered_qns)}
-
-    for q in questions:
-        for sl in q.skip_logic:
-            target = sl.target.strip()
-            target_qn = re.match(r'([A-Za-z0-9_]+)', target)
-            if not target_qn:
-                continue
-            target_id = target_qn.group(1)
-            if target_id not in qn_index:
-                continue
-
-            src_idx = qn_index.get(q.question_number)
-            tgt_idx = qn_index.get(target_id)
-            if src_idx is None or tgt_idx is None:
-                continue
-
-            # 건너뛰는 범위가 3문항 이상이면 경고
-            if tgt_idx - src_idx > 5:
-                skipped = ordered_qns[src_idx + 1:tgt_idx]
-                # 건너뛴 문항 중 다른 경로로 도달 가능한지는 간이 체크하지 않음
-                # (완전한 데드엔드 검출은 Path Simulator에서)
-                report.items.append(ReviewItem(
-                    severity="info",
-                    category="dead_end",
-                    question_number=q.question_number,
-                    title=f"대규모 스킵: {q.question_number} → {target_id}",
-                    detail=f"{len(skipped)}개 문항을 건너뜁니다 ({', '.join(skipped[:5])}{'...' if len(skipped) > 5 else ''}). "
-                           f"건너뛴 문항이 다른 경로로 도달 가능한지 확인해주세요.",
-                ))
+    # 데드엔드 검출은 Path Simulator에서 수행 (여기서는 제외)
 
     # 심각도 정렬: critical → warning → info
     severity_order = {"critical": 0, "warning": 1, "info": 2}
