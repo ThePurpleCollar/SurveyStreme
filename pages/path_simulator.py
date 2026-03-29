@@ -8,6 +8,8 @@ LLM 불필요 — 버튼 클릭 시 즉시 계산.
 import io
 import pandas as pd
 import streamlit as st
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
 
 from services.path_simulator import (
     parse_condition,
@@ -17,6 +19,7 @@ from services.path_simulator import (
     SimulatedPath,
 )
 from services.skip_logic_service import build_skip_logic_graph
+from services.checklist_generator import generate_checklist
 
 
 def page_path_simulator():
@@ -168,15 +171,25 @@ def _render_test_scenarios(result: SimulationResult):
         },
     )
 
-    # Excel download
-    buffer = io.BytesIO()
-    df.to_excel(buffer, index=False, sheet_name="테스트 시나리오")
-    buffer.seek(0)
+    # ── 통합 링크테스트 가이드 엑셀 ──
+    survey_doc = st.session_state.get("survey_document")
+    questions = survey_doc.questions if survey_doc else []
+
+    # 체크리스트 생성 (알고리즘만, LLM 없이 즉시)
+    checklist = None
+    if questions:
+        try:
+            checklist = generate_checklist(questions, language="ko", use_llm=False)
+        except Exception:
+            pass
+
+    excel_data = _build_link_test_excel(scenarios, checklist)
     st.download_button(
-        label="시나리오 다운로드 (Excel)",
-        data=buffer,
-        file_name="test_scenarios.xlsx",
+        label="링크테스트 가이드 다운로드 (Excel)",
+        data=excel_data,
+        file_name="link_test_guide.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
     )
 
 
@@ -290,3 +303,163 @@ def _render_all_paths(result: SimulationResult):
                     f"- `{step.question_number}` ({step.question_type}) "
                     f"{step.question_text[:80]}{skip_info}{terminal}"
                 )
+
+
+def _build_link_test_excel(scenarios, checklist) -> bytes:
+    """시나리오 + 체크리스트 통합 엑셀 생성.
+
+    Sheet 1: 테스트 시나리오 (보기 라벨 포함)
+    Sheet 2: 체크리스트 (확인란 포함)
+    Sheet 3: 시나리오별 체크 가이드 (프린트용)
+    """
+    wb = Workbook()
+    hdr_fill = PatternFill(start_color="0033A0", end_color="0033A0", fill_type="solid")
+    hdr_font = Font(color="FFFFFF", bold=True, size=10)
+    center = Alignment(horizontal="center", vertical="center")
+    wrap = Alignment(wrap_text=True, vertical="top")
+
+    def _style_header(ws):
+        for cell in ws[1]:
+            cell.fill = hdr_fill
+            cell.font = hdr_font
+            cell.alignment = center
+
+    # ── Sheet 1: 테스트 시나리오 ──
+    ws1 = wb.active
+    ws1.title = "테스트 시나리오"
+    ws1.append(["#", "우선순위", "응답 선택", "예상 경로", "검증 분기"])
+    _style_header(ws1)
+
+    for ts in (scenarios or []):
+        answer_parts = []
+        for k, v in ts.answer_selections.items():
+            label = ts.answer_labels.get(k, "")
+            if label and not label.startswith("코드"):
+                answer_parts.append(f"{k}: {label}({v})")
+            else:
+                answer_parts.append(f"{k}={v}")
+
+        ws1.append([
+            ts.scenario_id,
+            ts.priority,
+            ", ".join(answer_parts),
+            " → ".join(ts.expected_path[:15]),
+            ", ".join(ts.verified_branches[:8]),
+        ])
+
+    for row in ws1.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = wrap
+
+    ws1.column_dimensions['A'].width = 5
+    ws1.column_dimensions['B'].width = 12
+    ws1.column_dimensions['C'].width = 45
+    ws1.column_dimensions['D'].width = 50
+    ws1.column_dimensions['E'].width = 35
+
+    # ── Sheet 2: 체크리스트 ──
+    ws2 = wb.create_sheet("체크리스트")
+    ws2.append(["확인", "카테고리", "우선순위", "문항", "제목", "상세", "예상 동작"])
+    _style_header(ws2)
+
+    critical_fill = PatternFill(start_color="FFCDD2", end_color="FFCDD2", fill_type="solid")
+    warning_fill = PatternFill(start_color="FFF9C4", end_color="FFF9C4", fill_type="solid")
+
+    checklist_items = checklist.items if checklist else []
+    pri_kr = {"HIGH": "높음", "MEDIUM": "중간", "LOW": "낮음"}
+
+    for item in checklist_items:
+        row_num = ws2.max_row + 1
+        ws2.append([
+            "☐",
+            item.category,
+            pri_kr.get(item.priority, item.priority),
+            item.question_number,
+            item.title,
+            item.detail,
+            item.expected_behavior,
+        ])
+        if item.priority == "HIGH":
+            for cell in ws2[row_num]:
+                cell.fill = critical_fill
+        elif item.priority == "MEDIUM":
+            for cell in ws2[row_num]:
+                cell.fill = warning_fill
+
+    for row in ws2.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = wrap
+
+    ws2.column_dimensions['A'].width = 5
+    ws2.column_dimensions['B'].width = 14
+    ws2.column_dimensions['C'].width = 8
+    ws2.column_dimensions['D'].width = 10
+    ws2.column_dimensions['E'].width = 35
+    ws2.column_dimensions['F'].width = 50
+    ws2.column_dimensions['G'].width = 40
+
+    # ── Sheet 3: 시나리오별 체크 가이드 (프린트용) ──
+    ws3 = wb.create_sheet("시나리오별 체크 가이드")
+    bold = Font(bold=True, size=11)
+    scenario_fill = PatternFill(start_color="E3F2FD", end_color="E3F2FD", fill_type="solid")
+
+    current_row = 1
+    for ts in (scenarios or []):
+        # 시나리오 헤더
+        answer_parts = []
+        for k, v in ts.answer_selections.items():
+            label = ts.answer_labels.get(k, "")
+            if label and not label.startswith("코드"):
+                answer_parts.append(f"{k}: {label}({v})")
+            else:
+                answer_parts.append(f"{k}={v}")
+
+        ws3.cell(row=current_row, column=1,
+                 value=f"시나리오 {ts.scenario_id}: {', '.join(answer_parts)}")
+        ws3.cell(row=current_row, column=1).font = bold
+        ws3.cell(row=current_row, column=1).fill = scenario_fill
+        current_row += 1
+
+        ws3.cell(row=current_row, column=1, value=f"경로: {' → '.join(ts.expected_path[:12])}")
+        ws3.cell(row=current_row, column=1).font = Font(size=9, color="666666")
+        current_row += 1
+
+        # 이 시나리오의 경로에 해당하는 체크항목
+        path_qns = set(ts.expected_path)
+        relevant_items = [
+            item for item in checklist_items
+            if item.question_number in path_qns or item.question_number == "GLOBAL"
+        ]
+
+        if relevant_items:
+            ws3.cell(row=current_row, column=1, value="확인")
+            ws3.cell(row=current_row, column=2, value="항목")
+            ws3.cell(row=current_row, column=3, value="예상 동작")
+            for cell in ws3[current_row]:
+                if cell.value:
+                    cell.font = Font(bold=True, size=9)
+            current_row += 1
+
+            for item in relevant_items[:15]:
+                ws3.cell(row=current_row, column=1, value="☐")
+                ws3.cell(row=current_row, column=2, value=f"[{item.question_number}] {item.title}")
+                ws3.cell(row=current_row, column=3, value=item.expected_behavior)
+                for cell in ws3[current_row]:
+                    if cell.value:
+                        cell.alignment = wrap
+                        cell.font = Font(size=9)
+                current_row += 1
+        else:
+            ws3.cell(row=current_row, column=1, value="(이 경로에 해당하는 체크항목 없음)")
+            ws3.cell(row=current_row, column=1).font = Font(size=9, color="999999")
+            current_row += 1
+
+        current_row += 1  # 시나리오 간 빈 행
+
+    ws3.column_dimensions['A'].width = 6
+    ws3.column_dimensions['B'].width = 50
+    ws3.column_dimensions['C'].width = 45
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()

@@ -577,6 +577,7 @@ def generate_checklist(
     language: str = "ko",
     model: str = "gemini-2.5-flash",
     progress_callback: Optional[Callable] = None,
+    use_llm: bool = True,
 ) -> ChecklistResult:
     """링크테스트 체크리스트를 생성한다.
 
@@ -611,15 +612,16 @@ def generate_checklist(
 
     _notify("phase", {"name": "algorithmic", "status": "done", "count": len(all_items)})
 
-    # Phase 2: LLM 검사
-    _notify("phase", {"name": "llm", "status": "start"})
+    # Phase 2: LLM 검사 (선택적)
+    if use_llm:
+        _notify("phase", {"name": "llm", "status": "start"})
 
-    llm_items = _check_piping_and_scales(
-        questions, model, language, progress_callback=progress_callback,
-    )
-    all_items.extend(llm_items)
+        llm_items = _check_piping_and_scales(
+            questions, model, language, progress_callback=progress_callback,
+        )
+        all_items.extend(llm_items)
 
-    _notify("phase", {"name": "llm", "status": "done", "count": len(llm_items)})
+        _notify("phase", {"name": "llm", "status": "done", "count": len(llm_items)})
 
     # item_id 부여
     for i, item in enumerate(all_items, start=1):
