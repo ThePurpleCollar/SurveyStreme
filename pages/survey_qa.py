@@ -156,6 +156,13 @@ def _render_logic_visualization(questions, result: SimulationResult):
     dot_str = generate_dot(graph, view_mode=mode, orientation=rankdir)
     st.graphviz_chart(dot_str)
 
+    # 범례
+    st.caption(
+        "━━ 파란 실선: 스킵 로직 (조건부 이동)  |  "
+        "┅┅ 주황 점선: 필터 조건 (조건부 표시)  |  "
+        "── 회색 실선: 순차 진행"
+    )
+
     # 경고
     analysis = result.graph_analysis
     if analysis.unreachable_questions:

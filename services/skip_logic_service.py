@@ -161,20 +161,27 @@ def build_skip_logic_graph(questions: List[SurveyQuestion]) -> SkipLogicGraph:
                     original_target=sl.target,
                 ))
 
-    # 필터 엣지 (역참조)
+    # 필터 엣지 (역참조 — 복합 조건의 모든 참조 문항 추출)
     for q in questions:
         if not q.filter_condition:
             continue
-        match = _TARGET_QN_PATTERN.search(q.filter_condition)
-        if match:
-            ref_qn = match.group(1).upper()
+        filt = q.filter_condition
+        if filt.lower() in ('all respondents', '모두', '전원', '모두에게'):
+            continue
+        refs = _TARGET_QN_PATTERN.findall(filt)
+        seen_refs = set()
+        for ref_raw in refs:
+            ref_qn = ref_raw.upper()
             resolved = norm_lookup.get(ref_qn, ref_qn)
+            if resolved in seen_refs or resolved == q.question_number:
+                continue
+            seen_refs.add(resolved)
             edges.append(GraphEdge(
                 source=resolved,
                 target=q.question_number,
                 edge_type="filter",
-                label=_truncate(q.filter_condition, 30),
-                original_target=q.filter_condition,
+                label=_truncate(filt, 30),
+                original_target=filt,
             ))
 
     # END 노드
