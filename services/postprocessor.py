@@ -171,9 +171,14 @@ def apply_postprocessing(survey_doc) -> None:
             q.summary_type = scale_summary_type(int(m.group(1)))
             continue
 
-        # "TopN" / "RankN"
-        if re.match(r'^(Top|Rank)\s*\d+$', qtype, re.IGNORECASE):
-            q.summary_type = '%'
+        # "TopN" / "RankN" → 누적 순위 형식: Top1, Top1+2, Top1+2+3, ...
+        m_rank = re.match(r'^(Top|Rank)\s*(\d+)$', qtype, re.IGNORECASE)
+        if m_rank:
+            n = int(m_rank.group(2))
+            parts = []
+            for i in range(1, n + 1):
+                parts.append("Top" + "+".join(str(j) for j in range(1, i + 1)))
+            q.summary_type = ", ".join(parts)
             continue
 
         # 표준 유형

@@ -560,18 +560,7 @@ def _tab_table_titles(df: pd.DataFrame, language: str):
 
     st.divider()
     _render_title_dashboard(results)
-
-    # Editable Table을 기본으로 표시
     _render_title_editable_table()
-
-    # Comparison View는 보조로 expander 안에 배치
-    with st.expander("비교 보기 (원본 vs 생성)", expanded=False):
-        filter_mode = st.radio(
-            "필터", options=["All", "Split Only", "Non-Split Only", "Errors Only"],
-            format_func=lambda x: {"All": "전체", "Split Only": "분할 문항만", "Non-Split Only": "단일 문항만", "Errors Only": "오류만"}[x],
-            horizontal=True, key="title_filter_radio",
-        )
-        _render_title_comparison(results, filter_mode)
 
 
 # ======================================================================
@@ -1846,44 +1835,72 @@ def page_table_guide_builder():
             intel_lines.append(f"Segments: {seg_str}")
         st.info("\n\n".join(intel_lines), icon="\U0001f4cb")
 
-    # ── Completeness 진행률 ──
+    # ── 생성 항목 선택 + 원버튼 ──
+    st.markdown("#### 생성할 항목을 선택하세요")
+    col_chk1, col_chk2 = st.columns(2)
+    with col_chk1:
+        gen_titles = st.checkbox("Table Titles", value=True, key="gen_titles_chk")
+    with col_chk2:
+        gen_banners = st.checkbox("Banner (Beta)", value=False, key="gen_banners_chk")
+
+    generate_clicked = st.button(
+        "선택 항목 생성",
+        type="primary",
+        use_container_width=True,
+        disabled=not (gen_titles or gen_banners),
+    )
+
+    if generate_clicked:
+        if gen_titles:
+            with st.status("Table Title 생성 중...", expanded=True) as title_status:
+                progress_bar = st.progress(0)
+                log_area = st.empty()
+                batch_done_count = [0]
+                total_batches_ref = [1]
+
+                def _title_cb(event, data):
+                    if event == "batch_start":
+                        total_batches_ref[0] = data["total_batches"]
+                        log_area.text(f"배치 {data['batch_index'] + 1}/{data['total_batches']} 처리 중...")
+                    elif event == "batch_done":
+                        batch_done_count[0] += 1
+                        progress_bar.progress(batch_done_count[0] / total_batches_ref[0])
+                        log_area.text(f"배치 {data['batch_index'] + 1}/{data['total_batches']} 완료 ({data['generated_count']}개 생성)")
+
+                survey_ctx = _get_survey_context(df=df)
+                results = _run_title_generation(df, language, _title_cb, survey_context=survey_ctx)
+                st.session_state["title_results"] = results
+                _apply_results_to_df(results)
+                generated_count = sum(1 for r in results if not r["error"])
+                title_status.update(label=f"Title 생성 완료! {generated_count}개", state="complete")
+
+        if gen_banners:
+            _tab_banner_setup(df, language)
+
+        st.rerun()
+
+    # ── 진행률 요약 ──
     stats = _compute_completeness()
     total = stats["total"]
     if total > 0:
         items = [
             ("Titles", stats["titles"], total),
-            ("Net", stats["nets"], total),
             ("Banner", stats["banners"], None),
-            ("Assigned", stats["banner_assigned"], total),
-            ("Sort", stats["sorts"], total),
         ]
         parts = []
         for label, count, t in items:
             parts.append(f"**{label}** {count}/{t}" if t else f"**{label}** {count}")
-        st.caption(" \u00b7 ".join(parts))
+        st.caption(" · ".join(parts))
 
-    # ── 동적 탭 라벨 ──
-    tab_labels = [
-        _tab_label("Table Titles", stats["titles"], total),
-        _tab_label("Net/Recode", stats["nets"], total),
-        _tab_label("Sort & Details", stats["sorts"], total),
-        "Banner \u2713" if stats["banners"] > 0 else "Banner",
-        "Review & Export",
-    ]
-
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(tab_labels)
+    # ── 결과 탭: Titles + Banner + Export ──
+    tab_labels = ["Table Titles", "Banner (Beta)", "다운로드"]
+    tab1, tab2, tab3 = st.tabs(tab_labels)
 
     with tab1:
         _tab_table_titles(df, language)
 
     with tab2:
-        _tab_net_recode(df, language)
-
-    with tab3:
-        _tab_sort_details(df, language)
-
-    with tab4:
         _tab_banner_setup(df, language)
 
-    with tab5:
+    with tab3:
         _tab_review_export(df, language)
