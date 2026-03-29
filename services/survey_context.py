@@ -43,8 +43,6 @@ def build_survey_context(doc: SurveyDocument,
                 lines.append(f"  {i}. {obj}")
         if brief.get("key_segment_names"):
             lines.append(f"Key Segments: {', '.join(brief['key_segment_names'])}")
-        if brief.get("target_sample"):
-            lines.append(f"Target Sample: n={brief['target_sample']}")
         lines.append("")
 
     # ── Survey Intelligence 섹션 ──

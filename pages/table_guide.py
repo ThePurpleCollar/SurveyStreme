@@ -1657,8 +1657,7 @@ def _render_study_brief(doc):
                 f"**{brief.get('client_brand', '')}** — {brief.get('study_type', '')}  \n"
                 f"Objective: {brief.get('study_objective', '')}  \n"
                 f"Objectives: {' | '.join(brief.get('research_objectives', [])[:3])}  \n"
-                f"Segments: {' · '.join(brief.get('key_segment_names', []))}  \n"
-                f"Target Sample: {brief.get('target_sample', 'N/A')}"
+                f"Segments: {' · '.join(brief.get('key_segment_names', []))}"
             )
             if st.button("Edit Brief", key="edit_brief_btn"):
                 st.session_state["study_brief_confirmed"] = False
@@ -1720,16 +1719,6 @@ def _render_study_brief(doc):
             key="tg_segments_input",
         )
 
-        # Target Sample
-        target_sample = st.number_input(
-            "Target Sample Size (n=)",
-            min_value=0,
-            value=st.session_state.get("target_sample", 0),
-            step=50,
-            help="배너포인트당 최소 셀 사이즈 계산에 사용됩니다. 0이면 미지정.",
-            key="tg_target_sample_input",
-        )
-
         # 확정 버튼
         if st.button("Confirm Study Brief", type="primary", key="confirm_brief_btn",
                       use_container_width=True):
@@ -1748,11 +1737,9 @@ def _render_study_brief(doc):
                 "study_objective": study_objective,
                 "research_objectives": parsed_objectives,
                 "key_segment_names": parsed_segments,
-                "target_sample": target_sample if target_sample > 0 else None,
             }
             st.session_state["study_brief"] = brief
             st.session_state["study_brief_confirmed"] = True
-            st.session_state["target_sample"] = target_sample
 
             # doc에도 반영
             if doc:
