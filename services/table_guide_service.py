@@ -3384,6 +3384,96 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
         for col_letter, w in banner_col_widths.items():
             ws_banner.column_dimensions[col_letter].width = w
 
+    # ── Sheet 3b: Banner Cross-Tab Layout (DP용, 가로 펼침) ──
+    if tg_doc.banners:
+        ws_xtab = wb.create_sheet("Banner Layout")
+
+        cat_fill = PatternFill(start_color="E8EAF6", end_color="E8EAF6", fill_type="solid")
+        banner_fill = PatternFill(start_color="C5CAE9", end_color="C5CAE9", fill_type="solid")
+        cond_font = Font(size=9, color="666666", italic=True)
+        total_font = Font(bold=True, size=10)
+
+        # 카테고리별 그룹핑 (순서 보존)
+        cat_order = []
+        cat_map = {}
+        for b in tg_doc.banners:
+            cat = b.category or "기타"
+            if cat not in cat_map:
+                cat_map[cat] = []
+                cat_order.append(cat)
+            cat_map[cat].append(b)
+
+        # 4행 헤더 구성: Row 1=카테고리, Row 2=배너명, Row 3=포인트 라벨, Row 4=조건
+        col = 1  # 현재 컬럼 위치
+
+        for cat_name in cat_order:
+            banners_in_cat = cat_map[cat_name]
+            cat_start_col = col
+
+            for banner in banners_in_cat:
+                banner_start_col = col
+                points = banner.points
+
+                # Row 2: 배너명
+                btype = " [Composite]" if banner.banner_type == "composite" else ""
+                ws_xtab.cell(row=2, column=col,
+                             value=f"Banner {banner.banner_id}: {banner.name}{btype}")
+                ws_xtab.cell(row=2, column=col).font = Font(bold=True, size=10)
+                ws_xtab.cell(row=2, column=col).fill = banner_fill
+
+                # Row 3: 포인트 라벨들 + Total
+                for pt in points:
+                    ws_xtab.cell(row=3, column=col, value=pt.label)
+                    ws_xtab.cell(row=3, column=col).font = Font(bold=True)
+                    ws_xtab.cell(row=3, column=col).alignment = center_align
+                    col += 1
+
+                # Total 컬럼
+                ws_xtab.cell(row=3, column=col, value="Total")
+                ws_xtab.cell(row=3, column=col).font = total_font
+                ws_xtab.cell(row=3, column=col).alignment = center_align
+
+                # Row 2 배너명 병합 (배너 시작 ~ Total 컬럼)
+                if col > banner_start_col:
+                    ws_xtab.merge_cells(
+                        start_row=2, start_column=banner_start_col,
+                        end_row=2, end_column=col,
+                    )
+
+                col += 1  # 다음 배너 시작
+
+                # Row 4: 조건 (Total 제외)
+                cond_col = banner_start_col
+                for pt in points:
+                    ws_xtab.cell(row=4, column=cond_col, value=pt.condition or "")
+                    ws_xtab.cell(row=4, column=cond_col).font = cond_font
+                    ws_xtab.cell(row=4, column=cond_col).alignment = center_align
+                    cond_col += 1
+
+            # Row 1: 카테고리명 병합
+            cat_end_col = col - 1
+            if cat_end_col >= cat_start_col:
+                ws_xtab.cell(row=1, column=cat_start_col, value=cat_name)
+                ws_xtab.cell(row=1, column=cat_start_col).font = Font(bold=True, size=11)
+                ws_xtab.cell(row=1, column=cat_start_col).fill = cat_fill
+                ws_xtab.cell(row=1, column=cat_start_col).alignment = center_align
+                if cat_end_col > cat_start_col:
+                    ws_xtab.merge_cells(
+                        start_row=1, start_column=cat_start_col,
+                        end_row=1, end_column=cat_end_col,
+                    )
+
+        # 컬럼 너비
+        total_cols = col - 1
+        for i in range(1, total_cols + 1):
+            ws_xtab.column_dimensions[get_column_letter(i)].width = 15
+
+        # 행 높이
+        ws_xtab.row_dimensions[1].height = 22
+        ws_xtab.row_dimensions[2].height = 20
+        ws_xtab.row_dimensions[3].height = 18
+        ws_xtab.row_dimensions[4].height = 16
+
     # ── Sheet 4: Net/Recode Spec (데이터 있을 때만) ──
     has_net = any(q.net_recode for q in survey_doc.questions)
     if has_net:

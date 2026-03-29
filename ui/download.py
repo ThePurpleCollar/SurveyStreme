@@ -105,7 +105,7 @@ def prepare_excel_download(survey_doc) -> bytes:
     if hasattr(survey_doc, 'banners') and survey_doc.banners:
         ws_banner = wb.create_sheet("Banner Spec")
         ws_banner.append(["BannerID", "BannerName", "PointID", "PointLabel",
-                          "SourceQuestion", "Codes", "CodeLabels", "IsNet", "NetDefinition"])
+                          "SourceQuestion", "Condition", "IsNet", "NetDefinition"])
 
         for cell in ws_banner[1]:
             cell.fill = header_fill
@@ -120,14 +120,66 @@ def prepare_excel_download(survey_doc) -> bytes:
                     pt.point_id,
                     pt.label,
                     pt.source_question,
-                    ", ".join(pt.codes),
-                    ", ".join(pt.code_labels),
+                    pt.condition,
                     "Yes" if pt.is_net else "No",
                     pt.net_definition,
                 ])
 
-        for col_letter in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']:
+        for col_letter in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
             ws_banner.column_dimensions[col_letter].width = 18
+
+    # ── Sheet 3b: Banner Layout (가로 Cross-Tab, DP용) ──
+    if hasattr(survey_doc, 'banners') and survey_doc.banners:
+        ws_xtab = wb.create_sheet("Banner Layout")
+        cat_fill = PatternFill(start_color="E8EAF6", end_color="E8EAF6", fill_type="solid")
+        banner_fill = PatternFill(start_color="C5CAE9", end_color="C5CAE9", fill_type="solid")
+        cond_font = Font(size=9, color="666666", italic=True)
+
+        cat_order = []
+        cat_map = {}
+        for b in survey_doc.banners:
+            cat = getattr(b, 'category', '') or "기타"
+            if cat not in cat_map:
+                cat_map[cat] = []
+                cat_order.append(cat)
+            cat_map[cat].append(b)
+
+        col = 1
+        for cat_name in cat_order:
+            cat_start_col = col
+            for banner in cat_map[cat_name]:
+                banner_start_col = col
+                for pt in banner.points:
+                    ws_xtab.cell(row=3, column=col, value=pt.label)
+                    ws_xtab.cell(row=3, column=col).font = Font(bold=True)
+                    ws_xtab.cell(row=3, column=col).alignment = center_align
+                    ws_xtab.cell(row=4, column=col, value=pt.condition or "")
+                    ws_xtab.cell(row=4, column=col).font = cond_font
+                    col += 1
+                ws_xtab.cell(row=3, column=col, value="Total")
+                ws_xtab.cell(row=3, column=col).font = Font(bold=True)
+                btype = " [Composite]" if getattr(banner, 'banner_type', '') == "composite" else ""
+                ws_xtab.cell(row=2, column=banner_start_col,
+                             value=f"Banner {banner.banner_id}: {banner.name}{btype}")
+                ws_xtab.cell(row=2, column=banner_start_col).font = Font(bold=True)
+                ws_xtab.cell(row=2, column=banner_start_col).fill = banner_fill
+                if col > banner_start_col:
+                    ws_xtab.merge_cells(start_row=2, start_column=banner_start_col,
+                                        end_row=2, end_column=col)
+                col += 1
+
+            cat_end_col = col - 1
+            if cat_end_col >= cat_start_col:
+                ws_xtab.cell(row=1, column=cat_start_col, value=cat_name)
+                ws_xtab.cell(row=1, column=cat_start_col).font = Font(bold=True, size=11)
+                ws_xtab.cell(row=1, column=cat_start_col).fill = cat_fill
+                ws_xtab.cell(row=1, column=cat_start_col).alignment = center_align
+                if cat_end_col > cat_start_col:
+                    ws_xtab.merge_cells(start_row=1, start_column=cat_start_col,
+                                        end_row=1, end_column=cat_end_col)
+
+        for i in range(1, col):
+            ws_xtab.column_dimensions[get_column_letter(i)].width = 15
 
     # ── Sheet 4: Net/Recode Spec (있을 경우) ──
     seen_qn = set()
