@@ -15,8 +15,10 @@ from services.path_simulator import (
     parse_condition,
     simulate_paths,
     trace_path,
+    generate_persona_scenarios,
     SimulationResult,
     SimulatedPath,
+    PersonaScenario,
 )
 from services.skip_logic_service import build_skip_logic_graph
 from services.checklist_generator import generate_checklist
@@ -67,9 +69,12 @@ def page_path_simulator():
     st.divider()
 
     # Tabs
-    tab_scenarios, tab_tracer, tab_paths = st.tabs(
-        ["테스트 시나리오", "인터랙티브 추적기", "전체 경로"]
+    tab_personas, tab_scenarios, tab_tracer, tab_paths = st.tabs(
+        ["페르소나 시나리오", "분기 테스트", "인터랙티브 추적기", "전체 경로"]
     )
+
+    with tab_personas:
+        _render_persona_scenarios(questions, result)
 
     with tab_scenarios:
         _render_test_scenarios(result)
@@ -116,6 +121,41 @@ def _render_graph_warnings(result: SimulationResult):
             f"**{len(result.unparsed_conditions)}**건의 스킵 조건을 파싱할 수 없습니다:\n\n"
             + "\n".join(items),
         )
+
+
+def _render_persona_scenarios(questions, result: SimulationResult):
+    """페르소나 기반 테스트 시나리오."""
+    personas = generate_persona_scenarios(questions)
+
+    if not personas:
+        st.info("스크리닝/인구통계 문항이 없어 페르소나를 생성할 수 없습니다.")
+        return
+
+    st.subheader(f"페르소나 시나리오 ({len(personas)}건)")
+    st.caption("인구통계/스크리닝 문항의 보기 조합으로 자동 생성된 대표 응답자 경로입니다.")
+
+    for p in personas:
+        icon = "🚫" if p.is_termination else "👤"
+        with st.expander(
+            f"{icon} 시나리오 {p.persona_id}: {p.persona_label} ({p.path_length}문항)",
+            expanded=(p.persona_id <= 2),
+        ):
+            # 응답 선택
+            sel_parts = [f"**{qn}**: {p.answer_labels.get(qn, '')} ({code})"
+                         for qn, code in p.answer_selections.items()]
+            st.markdown("**응답 선택:** " + " | ".join(sel_parts))
+
+            # 경로
+            path_str = " → ".join(p.expected_path[:15])
+            if len(p.expected_path) > 15:
+                path_str += f" ... (총 {len(p.expected_path)}문항)"
+            st.markdown(f"**경로:** {path_str}")
+
+            if p.is_termination:
+                st.warning("이 페르소나는 스크리닝에서 탈락합니다. 탈락 처리가 올바른지 확인하세요.")
+
+    # 엑셀에 포함
+    st.session_state["persona_scenarios"] = personas
 
 
 def _render_test_scenarios(result: SimulationResult):
@@ -306,11 +346,12 @@ def _render_all_paths(result: SimulationResult):
 
 
 def _build_link_test_excel(scenarios, checklist) -> bytes:
-    """시나리오 + 체크리스트 통합 엑셀 생성.
+    """시나리오 + 체크리스트 + 페르소나 통합 엑셀 생성.
 
-    Sheet 1: 테스트 시나리오 (보기 라벨 포함)
-    Sheet 2: 체크리스트 (확인란 포함)
-    Sheet 3: 시나리오별 체크 가이드 (프린트용)
+    Sheet 1: 페르소나 시나리오 (인구통계 기반 경로)
+    Sheet 2: 분기 테스트 시나리오 (스킵 로직 커버리지)
+    Sheet 3: 체크리스트 (확인란 포함)
+    Sheet 4: 시나리오별 체크 가이드 (프린트용)
     """
     wb = Workbook()
     hdr_fill = PatternFill(start_color="0033A0", end_color="0033A0", fill_type="solid")
@@ -324,9 +365,43 @@ def _build_link_test_excel(scenarios, checklist) -> bytes:
             cell.font = hdr_font
             cell.alignment = center
 
-    # ── Sheet 1: 테스트 시나리오 ──
-    ws1 = wb.active
-    ws1.title = "테스트 시나리오"
+    # ── Sheet 1: 페르소나 시나리오 ──
+    ws_persona = wb.active
+    ws_persona.title = "페르소나 시나리오"
+    ws_persona.append(["#", "페르소나", "응답 선택", "예상 경로", "경로 길이", "탈락 여부"])
+    _style_header(ws_persona)
+
+    persona_fill = PatternFill(start_color="FFF3E0", end_color="FFF3E0", fill_type="solid")
+    personas = st.session_state.get("persona_scenarios", [])
+    for p in personas:
+        sel_parts = [f"{qn}: {p.answer_labels.get(qn, '')}({code})"
+                     for qn, code in p.answer_selections.items()]
+        row_num = ws_persona.max_row + 1
+        ws_persona.append([
+            p.persona_id,
+            p.persona_label,
+            ", ".join(sel_parts),
+            " → ".join(p.expected_path[:15]),
+            p.path_length,
+            "탈락" if p.is_termination else "",
+        ])
+        if p.is_termination:
+            for cell in ws_persona[row_num]:
+                cell.fill = persona_fill
+
+    for row in ws_persona.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = wrap
+
+    ws_persona.column_dimensions['A'].width = 5
+    ws_persona.column_dimensions['B'].width = 35
+    ws_persona.column_dimensions['C'].width = 45
+    ws_persona.column_dimensions['D'].width = 50
+    ws_persona.column_dimensions['E'].width = 10
+    ws_persona.column_dimensions['F'].width = 10
+
+    # ── Sheet 2: 분기 테스트 시나리오 ──
+    ws1 = wb.create_sheet("분기 테스트")
     ws1.append(["#", "우선순위", "응답 선택", "예상 경로", "검증 분기"])
     _style_header(ws1)
 

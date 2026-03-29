@@ -620,3 +620,127 @@ def simulate_paths(questions: List[SurveyQuestion]) -> SimulationResult:
         total_skip_rules=graph.total_skip_rules,
         unparsed_conditions=unparsed,
     )
+
+
+# ---------------------------------------------------------------------------
+# 페르소나 기반 테스트 시나리오
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PersonaScenario:
+    """페르소나 기반 테스트 시나리오."""
+    persona_id: int
+    persona_label: str               # "20대 여성, 삼성폰 사용자"
+    answer_selections: Dict[str, str]  # {"S1": "2", "S2": "1", "Q3": "1"}
+    answer_labels: Dict[str, str]    # {"S1": "여성", "S2": "20대", "Q3": "삼성"}
+    expected_path: List[str]         # ["S1", "S2", "Q1", "Q3", ...]
+    path_length: int = 0
+    is_termination: bool = False     # 중도 탈락 경로인지
+
+
+def generate_persona_scenarios(
+    questions: List[SurveyQuestion],
+    graph=None,
+) -> List[PersonaScenario]:
+    """demographics/screening 문항의 보기 조합으로 페르소나 시나리오를 생성.
+
+    LLM 없이 알고리즘으로 대표 페르소나를 구성한다:
+    1. role이 'screening'/'demographics'이거나 문항번호가 S/D/DM으로 시작하는 문항 식별
+    2. 각 문항의 보기 중 대표값 선택 (첫 번째, 마지막, 중간)
+    3. 조합하여 페르소나 생성 → trace_path로 경로 추적
+    """
+    import itertools
+
+    if not questions:
+        return []
+
+    if graph is None:
+        graph = build_skip_logic_graph(questions)
+
+    # 1. 스크리닝/인구통계 문항 식별
+    demo_questions = []
+    for q in questions:
+        role = getattr(q, 'role', '').lower()
+        qn_upper = q.question_number.upper()
+        is_demo = (
+            role in ('screening', 'demographics')
+            or qn_upper.startswith(('S', 'D', 'DM', 'DE', 'SC'))
+        )
+        if is_demo and q.answer_options and q.question_type in ('SA', None, 'sa'):
+            demo_questions.append(q)
+
+    if not demo_questions:
+        return []
+
+    # 2. 각 문항에서 대표 보기 선택 (최대 3개: 첫 번째, 중간, 마지막)
+    demo_choices = []
+    for q in demo_questions[:5]:  # 최대 5개 문항
+        opts = q.answer_options
+        # 특수 코드(98, 99) 제외
+        regular = [o for o in opts if o.code not in ('98', '99', '97', '96')]
+        if not regular:
+            continue
+
+        picks = []
+        picks.append(regular[0])
+        if len(regular) >= 3:
+            picks.append(regular[len(regular) // 2])
+        if len(regular) >= 2:
+            picks.append(regular[-1])
+        # 중복 제거
+        seen = set()
+        unique_picks = []
+        for p in picks:
+            if p.code not in seen:
+                seen.add(p.code)
+                unique_picks.append(p)
+        demo_choices.append((q, unique_picks))
+
+    if not demo_choices:
+        return []
+
+    # 3. 조합 생성 (최대 12개 페르소나)
+    all_combos = list(itertools.product(*[choices for _, choices in demo_choices]))
+    if len(all_combos) > 12:
+        # 균등 샘플링
+        step = len(all_combos) // 12
+        all_combos = all_combos[::step][:12]
+
+    # 4. 각 조합으로 경로 추적
+    qn_map = {q.question_number: q for q in questions}
+    personas = []
+
+    for idx, combo in enumerate(all_combos, 1):
+        selections = {}
+        labels = {}
+        label_parts = []
+
+        for (q, _), opt in zip(demo_choices, combo):
+            selections[q.question_number] = opt.code
+            labels[q.question_number] = opt.label
+            label_parts.append(opt.label)
+
+        # 경로 추적
+        path = trace_path(questions, graph, selections)
+
+        # 중도 탈락 판별 (경로가 전체 문항의 30% 이하면 탈락 경로)
+        is_term = path.length < len(questions) * 0.3
+
+        persona_label = ", ".join(label_parts)
+        if is_term:
+            persona_label += " (탈락 경로)"
+
+        personas.append(PersonaScenario(
+            persona_id=idx,
+            persona_label=persona_label,
+            answer_selections=selections,
+            answer_labels=labels,
+            expected_path=path.question_numbers,
+            path_length=path.length,
+            is_termination=is_term,
+        ))
+
+    # 경로 길이 다양성으로 정렬 (긴 경로 먼저, 탈락 경로는 뒤로)
+    personas.sort(key=lambda p: (p.is_termination, -p.path_length))
+
+    return personas
