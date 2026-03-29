@@ -7,10 +7,7 @@ import logging
 from services.llm_client import init_client, init_gemini
 from pages.doc_analyzer import page_document_processing
 from pages.table_guide import page_table_guide_builder
-from pages.quality_checker import page_quality_checker
-from pages.skip_logic_visualizer import page_skip_logic_visualizer
-from pages.path_simulator import page_path_simulator
-from pages.checklist_generator import page_checklist_generator
+from pages.survey_qa import page_survey_qa
 from pages.user_guide import page_user_reference
 from models.survey import SurveyDocument
 from ui.download import render_download_buttons
@@ -66,29 +63,16 @@ def _confirm_overwrite(filename: str, question_count: int):
 
 
 # --- 네비게이션 상수 ---
-# Step 1: 설문 분석 & 테이블 세팅
-# Step 2: 로직 오류 검증
-# Step 3: 링크 테스트 시나리오
 _PAGES = [
     "Questionnaire Analyzer",   # 0
     "Table Guide Builder",      # 1  (needs edited_df)
-    "---",                      # 2
-    "Quality Checker",          # 3  (needs survey_doc)
-    "Skip Logic",               # 4  (needs survey_doc)
-    "---",                      # 5
-    "Path Simulator",           # 6  (needs survey_doc)
-    "Checklist",                # 7  (needs survey_doc)
+    "Survey QA",                # 2  (needs survey_doc)
 ]
 
 _ICONS_UNLOCKED = [
     'bi bi-magic',              # 0  Questionnaire Analyzer
     'bi bi-table',              # 1  Table Guide Builder
-    None,                       # 2  ---
-    'bi bi-shield-check',       # 3  Quality Checker
-    'bi bi-diagram-3',          # 4  Skip Logic
-    None,                       # 5  ---
-    'bi bi-signpost-split',     # 6  Path Simulator
-    'bi bi-list-check',         # 7  Checklist
+    'bi bi-shield-check',       # 2  Survey QA
 ]
 
 # ============================================================
@@ -167,12 +151,8 @@ with st.sidebar:
     icons = list(_ICONS_UNLOCKED)
     if not has_edited_df:
         icons[1] = 'bi bi-lock'       # Table Guide Builder
-    if not has_survey_doc and not has_edited_df:
-        icons[3] = 'bi bi-lock'       # Quality Checker
     if not has_survey_doc:
-        icons[4] = 'bi bi-lock'       # Skip Logic
-        icons[6] = 'bi bi-lock'       # Path Simulator
-        icons[7] = 'bi bi-lock'       # Checklist
+        icons[2] = 'bi bi-lock'       # Survey QA
 
     page = option_menu(
         None,
@@ -214,14 +194,5 @@ if page == 'Questionnaire Analyzer':
 elif page == 'Table Guide Builder':
     page_table_guide_builder()
 
-elif page == 'Quality Checker':
-    page_quality_checker()
-
-elif page == 'Skip Logic':
-    page_skip_logic_visualizer()
-
-elif page == 'Path Simulator':
-    page_path_simulator()
-
-elif page == 'Checklist':
-    page_checklist_generator()
+elif page == 'Survey QA':
+    page_survey_qa()
