@@ -134,7 +134,7 @@ def page_survey_qa():
 
 def _render_logic_visualization(questions, result: SimulationResult):
     """스킵 로직 Graphviz 시각화."""
-    from services.skip_logic_service import build_skip_logic_graph, render_skip_logic_dot
+    from services.skip_logic_service import build_skip_logic_graph, generate_dot
 
     graph = build_skip_logic_graph(questions)
 
@@ -150,10 +150,10 @@ def _render_logic_visualization(questions, result: SimulationResult):
         orientation = st.radio("방향", ["위 → 아래", "왼쪽 → 오른쪽"],
                                horizontal=True, key="qa_orientation")
 
-    skip_only = view_mode == "스킵만"
+    mode = "skip_only" if view_mode == "스킵만" else "full_flow"
     rankdir = "TB" if orientation == "위 → 아래" else "LR"
 
-    dot_str = render_skip_logic_dot(graph, questions, skip_only=skip_only, rankdir=rankdir)
+    dot_str = generate_dot(graph, view_mode=mode, orientation=rankdir)
     st.graphviz_chart(dot_str)
 
     # 경고
