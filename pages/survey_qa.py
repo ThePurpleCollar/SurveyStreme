@@ -25,7 +25,7 @@ from services.prescripting_checker import (
 
 
 def page_survey_qa():
-    st.title("Survey QA")
+    st.title("Logic Checker")
 
     # Guard
     if "survey_document" not in st.session_state or st.session_state["survey_document"] is None:
@@ -107,9 +107,9 @@ def page_survey_qa():
     st.divider()
     excel_data = _build_qa_excel(result, review, checklist)
     st.download_button(
-        label="Survey QA 가이드 다운로드 (Excel)",
+        label="Logic Checker 결과 다운로드 (Excel)",
         data=excel_data,
-        file_name="survey_qa_guide.xlsx",
+        file_name="logic_checker.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )

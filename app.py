@@ -66,13 +66,13 @@ def _confirm_overwrite(filename: str, question_count: int):
 _PAGES = [
     "Questionnaire Analyzer",   # 0
     "Table Guide Builder",      # 1  (needs edited_df)
-    "Survey QA",                # 2  (needs survey_doc)
+    "Logic Checker",             # 2  (needs survey_doc)
 ]
 
 _ICONS_UNLOCKED = [
     'bi bi-magic',              # 0  Questionnaire Analyzer
     'bi bi-table',              # 1  Table Guide Builder
-    'bi bi-shield-check',       # 2  Survey QA
+    'bi bi-shield-check',       # 2  Logic Checker
 ]
 
 # ============================================================
@@ -194,5 +194,5 @@ if page == 'Questionnaire Analyzer':
 elif page == 'Table Guide Builder':
     page_table_guide_builder()
 
-elif page == 'Survey QA':
+elif page == 'Logic Checker':
     page_survey_qa()
