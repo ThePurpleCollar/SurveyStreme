@@ -12,6 +12,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 from services.prescripting_checker import (
     run_algorithmic_checks,
+    run_typo_checks,
     run_ai_checks,
     ReviewReport,
     ReviewItem,
@@ -39,41 +40,72 @@ def page_quality_checker():
         icon="🔍",
     )
 
-    # ── 알고리즘 검출 (항상 즉시 실행) ──
-    report = run_algorithmic_checks(questions)
-    st.session_state["review_report"] = report
+    # ── 검출 실행 버튼 ──
+    run_clicked = st.button("검토 실행", type="primary", use_container_width=True, key="run_review_btn")
 
-    # ── AI 검출 옵션 ──
-    with st.expander("AI 검출 (선택사항 — 오타, MECE, 논리 충돌)", expanded=False):
-        st.caption("LLM을 사용하여 추가 검출을 실행합니다. 시간이 소요될 수 있습니다.")
-        ai_clicked = st.button("AI 검출 실행", key="ai_check_btn")
+    if run_clicked:
+        # 1. 알고리즘 검출 (즉시)
+        report = run_algorithmic_checks(questions)
 
-        if ai_clicked:
-            with st.status("AI 검출 중...", expanded=True) as status:
-                progress_bar = st.progress(0)
-                log_area = st.empty()
-                batch_done = [0]
-                total_batches = [1]
+        # 2. 오타 검출 (AI, 기본 포함)
+        with st.status("오타/문법 검사 중...", expanded=True) as typo_status:
+            progress_bar = st.progress(0)
+            log_area = st.empty()
+            batch_done = [0]
+            total_batches = [1]
 
-                def _cb(event, data):
-                    if event == "batch_start":
-                        total_batches[0] = data["total_batches"]
-                        log_area.text(f"배치 {data['batch_index'] + 1}/{data['total_batches']} 처리 중...")
-                    elif event == "batch_done":
-                        batch_done[0] += 1
-                        progress_bar.progress(batch_done[0] / total_batches[0])
-                        log_area.text(f"배치 {data['batch_index'] + 1}/{data['total_batches']} 완료 ({data['issues_found']}건)")
+            def _typo_cb(event, data):
+                if event == "batch_start":
+                    total_batches[0] = data["total_batches"]
+                    log_area.text(f"배치 {data['batch_index'] + 1}/{data['total_batches']} 처리 중...")
+                elif event == "batch_done":
+                    batch_done[0] += 1
+                    progress_bar.progress(batch_done[0] / total_batches[0])
+                    log_area.text(f"배치 {data['batch_index'] + 1}/{data['total_batches']} 완료 ({data['issues_found']}건)")
 
-                ai_items = run_ai_checks(questions, language="ko", progress_callback=_cb)
-                report.items.extend(ai_items)
-                # 재정렬
-                sev_order = {"critical": 0, "warning": 1, "info": 2}
-                report.items.sort(key=lambda x: (sev_order.get(x.severity, 9), x.question_number))
-                st.session_state["review_report"] = report
-                status.update(label=f"AI 검출 완료! {len(ai_items)}건 추가 발견", state="complete")
+            typo_items = run_typo_checks(questions, language="ko", progress_callback=_typo_cb)
+            report.items.extend(typo_items)
+            typo_status.update(label=f"오타 검사 완료! {len(typo_items)}건 발견", state="complete")
 
-    # ── 결과 표시 ──
-    _render_report(report)
+        # 정렬
+        sev_order = {"critical": 0, "warning": 1, "info": 2}
+        report.items.sort(key=lambda x: (sev_order.get(x.severity, 9), x.question_number))
+        st.session_state["review_report"] = report
+
+    # ── AI 추가 검출 (선택) ──
+    if "review_report" in st.session_state:
+        report = st.session_state["review_report"]
+
+        with st.expander("AI 추가 검출 (선택사항 — MECE, 논리 충돌)", expanded=False):
+            st.caption("보기의 MECE 검증, 문항 간 논리 충돌을 추가로 검사합니다.")
+            ai_clicked = st.button("AI 추가 검출 실행", key="ai_check_btn")
+
+            if ai_clicked:
+                with st.status("AI 추가 검출 중...", expanded=True) as status:
+                    progress_bar = st.progress(0)
+                    log_area = st.empty()
+                    batch_done = [0]
+                    total_batches = [1]
+
+                    def _cb(event, data):
+                        if event == "batch_start":
+                            total_batches[0] = data["total_batches"]
+                            log_area.text(f"배치 {data['batch_index'] + 1}/{data['total_batches']} 처리 중...")
+                        elif event == "batch_done":
+                            batch_done[0] += 1
+                            progress_bar.progress(batch_done[0] / total_batches[0])
+                            log_area.text(f"배치 {data['batch_index'] + 1}/{data['total_batches']} 완료 ({data['issues_found']}건)")
+
+                    ai_items = run_ai_checks(questions, language="ko", progress_callback=_cb)
+                    report.items.extend(ai_items)
+                    sev_order = {"critical": 0, "warning": 1, "info": 2}
+                    report.items.sort(key=lambda x: (sev_order.get(x.severity, 9), x.question_number))
+                    st.session_state["review_report"] = report
+                    status.update(label=f"AI 추가 검출 완료! {len(ai_items)}건 발견", state="complete")
+
+        _render_report(report)
+    else:
+        st.info("**검토 실행** 버튼을 눌러 설문지 검토를 시작하세요.", icon="🔍")
 
 
 def _render_report(report: ReviewReport):

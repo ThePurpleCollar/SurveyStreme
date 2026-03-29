@@ -248,9 +248,9 @@ def run_algorithmic_checks(questions: List[SurveyQuestion]) -> ReviewReport:
     return report
 
 
-def run_ai_checks(questions: List[SurveyQuestion], language: str = "ko",
-                  progress_callback=None) -> List[ReviewItem]:
-    """AI 기반 검출 (LLM 사용). 오타, MECE, 논리 충돌.
+def run_typo_checks(questions: List[SurveyQuestion], language: str = "ko",
+                    progress_callback=None) -> List[ReviewItem]:
+    """AI 기반 오타/문법 검출. 기본 실행 항목.
 
     Args:
         questions: SurveyQuestion 리스트
@@ -266,19 +266,97 @@ def run_ai_checks(questions: List[SurveyQuestion], language: str = "ko",
     if not questions:
         return items
 
-    # 배치 처리
-    batch_size = 15
+    batch_size = 20
     batches = [questions[i:i + batch_size] for i in range(0, len(questions), batch_size)]
 
-    system_prompt = f"""당신은 설문지 스크립팅 전 검토 전문가입니다.
-다음 설문 문항들에서 오타, 문법 오류, MECE 위반(보기가 상호배타적/전체포괄적이지 않은 경우),
-문항 간 논리적 충돌을 찾아 JSON으로 반환하세요.
+    system_prompt = f"""당신은 설문지 오타/문법 검수 전문가입니다.
+다음 설문 문항과 보기에서 오타, 맞춤법 오류, 띄어쓰기 오류, 문법 오류를 찾아 JSON으로 반환하세요.
+사소한 스타일 차이는 무시하고, 명확한 오류만 보고하세요.
 
 출력 언어: {"한국어" if language == "ko" else "English"}
 
 JSON 형식:
 {{"issues": [
-  {{"question_number": "Q1", "category": "typo|mece|logic",
+  {{"question_number": "Q1", "severity": "warning",
+    "title": "오타 발견: [원본] → [수정]",
+    "detail": "상세 설명"}}
+]}}
+
+이슈가 없으면: {{"issues": []}}"""
+
+    for batch_idx, batch in enumerate(batches):
+        if progress_callback:
+            progress_callback("batch_start", {
+                "batch_index": batch_idx,
+                "total_batches": len(batches),
+                "question_count": len(batch),
+            })
+
+        user_lines = []
+        for q in batch:
+            opts = " | ".join(f"{o.code}.{o.label}" for o in q.answer_options[:20])
+            line = f"[{q.question_number}] {q.question_text}"
+            if opts:
+                line += f"\n  보기: {opts}"
+            user_lines.append(line)
+
+        try:
+            result = call_llm_json(system_prompt, "\n\n".join(user_lines),
+                                    MODEL_QUALITY_CHECKER, max_tokens=4096)
+            for iss in result.get("issues", []):
+                items.append(ReviewItem(
+                    severity=iss.get("severity", "warning"),
+                    category="typo",
+                    question_number=iss.get("question_number", ""),
+                    title=iss.get("title", ""),
+                    detail=iss.get("detail", ""),
+                ))
+        except Exception as e:
+            logger.error(f"Typo check batch {batch_idx} failed: {e}")
+
+        if progress_callback:
+            progress_callback("batch_done", {
+                "batch_index": batch_idx,
+                "total_batches": len(batches),
+                "issues_found": len(items),
+            })
+
+    return items
+
+
+def run_ai_checks(questions: List[SurveyQuestion], language: str = "ko",
+                  progress_callback=None) -> List[ReviewItem]:
+    """AI 기반 추가 검출 (LLM 사용). MECE 검증, 논리 충돌.
+
+    오타는 run_typo_checks()에서 별도 처리하므로 여기서는 제외.
+
+    Args:
+        questions: SurveyQuestion 리스트
+        language: 분석 언어
+        progress_callback: 진행 콜백
+
+    Returns:
+        ReviewItem 리스트
+    """
+    from services.llm_client import call_llm_json, MODEL_QUALITY_CHECKER
+
+    items = []
+    if not questions:
+        return items
+
+    batch_size = 15
+    batches = [questions[i:i + batch_size] for i in range(0, len(questions), batch_size)]
+
+    system_prompt = f"""당신은 설문지 스크립팅 전 검토 전문가입니다.
+다음 설문 문항들에서 MECE 위반(보기가 상호배타적/전체포괄적이지 않은 경우),
+문항 간 논리적 충돌을 찾아 JSON으로 반환하세요.
+오타/문법 오류는 검사하지 마세요 (별도 처리됨).
+
+출력 언어: {"한국어" if language == "ko" else "English"}
+
+JSON 형식:
+{{"issues": [
+  {{"question_number": "Q1", "category": "mece|logic",
     "severity": "critical|warning|info",
     "title": "이슈 제목", "detail": "상세 설명"}}
 ]}}
