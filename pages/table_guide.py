@@ -877,78 +877,8 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
         st.warning("문항 데이터가 없습니다. Questionnaire Analyzer에서 먼저 문서를 처리해주세요.")
         return
 
-    suggest_clicked = st.button("배너 자동 추천", type="primary",
-                                key="suggest_banners_btn")
-
-    if suggest_clicked:
-        with st.status("전문가 합의 기반 배너 생성 중...", expanded=True) as status:
-            status_text = st.empty()
-            expert_area = st.empty()
-
-            def _progress_cb(event, data):
-                if event == "phase":
-                    name = data.get("name", "")
-                    phase_status = data.get("status", "")
-                    _PHASE_LABELS = {
-                        "research_plan": "Creating research plan",
-                        "expert_panel": "Expert panel analyzing",
-                        "synthesis": "Building expert consensus",
-                        "banner_design": "Designing banners from consensus plan",
-                        "validation": "Validating banner codes",
-                    }
-                    label = _PHASE_LABELS.get(name, name)
-                    if phase_status == "start":
-                        extra = ""
-                        if name == "expert_panel":
-                            extra = f" ({data.get('count', 3)} experts in parallel)"
-                        status_text.markdown(f"**{label}{extra}...**")
-                    elif phase_status == "done":
-                        extra = ""
-                        if name == "synthesis":
-                            score = data.get("agreement_score", 0)
-                            extra = f" (agreement: {score:.0%})"
-                        status_text.markdown(f":white_check_mark: {label}{extra}")
-                elif event == "expert_done":
-                    expert_area.markdown(
-                        f"  :white_check_mark: {data.get('name', '')} complete "
-                        f"({data.get('index', 0)}/{data.get('total', 3)})"
-                    )
-
-            doc = st.session_state.get("survey_document")
-            intel = doc.survey_intelligence if doc else None
-            survey_ctx = _get_survey_context()
-            suggested, plan = suggest_banner_points(
-                questions, language,
-                survey_context=survey_ctx,
-                intelligence=intel,
-                progress_callback=_progress_cb,
-            )
-
-            if suggested:
-                doc = st.session_state.get("survey_document")
-                if doc:
-                    doc.banners = suggested
-                st.session_state["banners_suggested"] = True
-                if plan:
-                    st.session_state["banner_analysis_plan"] = plan
-                    # 연구 기획서 및 전문가 출력 세션 저장
-                    rp = plan.get("_research_plan")
-                    if rp:
-                        st.session_state["banner_research_plan"] = rp
-                    eo = plan.get("_expert_outputs")
-                    if eo:
-                        st.session_state["banner_expert_outputs"] = eo
-                    st.session_state["banner_consensus_score"] = plan.get("agreement_score", 0)
-
-                n_banners = len(suggested)
-                n_cats = len(set(b.category for b in suggested if b.category))
-                agreement = plan.get("agreement_score", 0) if plan else 0
-                summary = f"Done! {n_banners} banners in {n_cats} categories"
-                if agreement > 0:
-                    summary += f" (agreement: {agreement:.0%})"
-                status.update(label=summary, state="complete")
-            else:
-                status.update(label="적합한 배너 후보를 찾지 못했습니다.", state="error")
+    # 배너는 상단 "선택 항목 생성"에서 ☑ Banner (Beta)로 생성
+    # 이 탭은 생성된 배너의 확인/편집 전용
 
     # ── Analysis Plan & Consensus 표시 ──
     plan = st.session_state.get("banner_analysis_plan")
@@ -1090,7 +1020,7 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
     banners = doc.banners if doc else []
 
     if not banners:
-        st.info("No banners defined yet. Click **Auto-Suggest Banner Points** or add manually below.")
+        st.info("배너가 아직 없습니다. 상단에서 **☑ Banner (Beta)** 를 선택하고 **선택 항목 생성**을 눌러주세요.")
 
     # ── Banner Summary 테이블 (체크박스 제거 UI) ──
     if banners:
