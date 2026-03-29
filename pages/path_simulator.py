@@ -127,21 +127,30 @@ def _render_test_scenarios(result: SimulationResult):
 
     rows = []
     for ts in scenarios:
-        answers_str = ", ".join(f"{k}={v}" for k, v in ts.answer_selections.items())
-        path_str = " -> ".join(ts.expected_path[:10])
+        # 보기 라벨 포함: "Q1: 남성(1), Q3: 20대(2)"
+        answer_parts = []
+        for k, v in ts.answer_selections.items():
+            label = ts.answer_labels.get(k, "")
+            if label and not label.startswith("코드"):
+                answer_parts.append(f"{k}: {label}({v})")
+            else:
+                answer_parts.append(f"{k}={v}")
+        answers_str = ", ".join(answer_parts)
+
+        path_str = " → ".join(ts.expected_path[:10])
         if len(ts.expected_path) > 10:
-            path_str += f" ... ({len(ts.expected_path)} total)"
+            path_str += f" ... (총 {len(ts.expected_path)}개)"
         branches_str = ", ".join(ts.verified_branches[:5])
         if len(ts.verified_branches) > 5:
-            branches_str += f" ... ({len(ts.verified_branches)} total)"
+            branches_str += f" ... (총 {len(ts.verified_branches)}개)"
 
         rows.append({
             "#": ts.scenario_id,
-            "Priority": ts.priority,
-            "Description": ts.description,
-            "Answers": answers_str,
-            "Expected Path": path_str,
-            "Branches Verified": branches_str,
+            "우선순위": ts.priority,
+            "설명": ts.description,
+            "응답 선택": answers_str,
+            "예상 경로": path_str,
+            "검증 분기": branches_str,
         })
 
     df = pd.DataFrame(rows)
@@ -151,17 +160,17 @@ def _render_test_scenarios(result: SimulationResult):
         hide_index=True,
         column_config={
             "#": st.column_config.NumberColumn("#", width="small"),
-            "Priority": st.column_config.TextColumn("Priority", width="small"),
-            "Description": st.column_config.TextColumn("Description", width="medium"),
-            "Answers": st.column_config.TextColumn("Answers", width="medium"),
-            "Expected Path": st.column_config.TextColumn("Expected Path", width="large"),
-            "Branches Verified": st.column_config.TextColumn("Branches", width="medium"),
+            "우선순위": st.column_config.TextColumn("우선순위", width="small"),
+            "설명": st.column_config.TextColumn("설명", width="medium"),
+            "응답 선택": st.column_config.TextColumn("응답 선택", width="medium"),
+            "예상 경로": st.column_config.TextColumn("예상 경로", width="large"),
+            "검증 분기": st.column_config.TextColumn("검증 분기", width="medium"),
         },
     )
 
     # Excel download
     buffer = io.BytesIO()
-    df.to_excel(buffer, index=False, sheet_name="Test Scenarios")
+    df.to_excel(buffer, index=False, sheet_name="테스트 시나리오")
     buffer.seek(0)
     st.download_button(
         label="시나리오 다운로드 (Excel)",

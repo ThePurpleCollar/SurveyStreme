@@ -75,8 +75,9 @@ class TestScenario:
     scenario_id: int
     description: str                     # "Q1=1 → Q5 스킵 테스트"
     answer_selections: Dict[str, str]    # {"Q1": "1", "Q3": "2"}
-    expected_path: List[str]             # ["Q1", "Q5", "Q6", ...]
-    verified_branches: List[str]         # ["Q1→Q5"]
+    answer_labels: Dict[str, str] = field(default_factory=dict)  # {"Q1": "남성", "Q3": "20대"}
+    expected_path: List[str] = field(default_factory=list)       # ["Q1", "Q5", "Q6", ...]
+    verified_branches: List[str] = field(default_factory=list)   # ["Q1→Q5"]
     priority: str = "REQUIRED"           # REQUIRED | RECOMMENDED
 
 
@@ -585,6 +586,23 @@ def simulate_paths(questions: List[SurveyQuestion]) -> SimulationResult:
     analysis = analyze_graph(graph, questions)
     paths = enumerate_paths(questions, graph)
     scenarios = generate_test_scenarios(questions, graph)
+
+    # 시나리오에 보기 라벨 매핑
+    qn_map = {q.question_number: q for q in questions}
+    for sc in scenarios:
+        labels = {}
+        for qn, code in sc.answer_selections.items():
+            q = qn_map.get(qn)
+            if q and q.answer_options:
+                for opt in q.answer_options:
+                    if opt.code == code:
+                        labels[qn] = opt.label
+                        break
+                else:
+                    labels[qn] = f"코드 {code}"
+            else:
+                labels[qn] = f"코드 {code}"
+        sc.answer_labels = labels
 
     # 파싱 불가 조건 수집
     unparsed: List[Tuple[str, str]] = []
