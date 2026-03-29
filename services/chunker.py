@@ -15,15 +15,20 @@ from services.docx_renderer import render_sections_to_annotated_text, render_sec
 # 최대 청크 크기 (문자 수). ~200K자 ≈ ~50K 토큰.
 MAX_CHUNK_CHARS = 200000
 
-# ── Ultra-loose 분할 지점 패턴 ──
-# 영어/숫자/한글 등으로 시작하고 구분자(마침표/괄호/콜론/공백)가 따르는 줄.
-# 정확한 문항번호가 아니어도 OK — 텍스트를 자르기 좋은 위치를 찾는 것이 목적.
+# ── Ultra-loose 분할 지점 패턴 (대괄호 시작 허용) ──
+# 영어/숫자/한글 등으로 시작하고 구분자가 따르는 줄. [DE1. ...] 형태도 포함.
 _SPLIT_POINT_RE = re.compile(
-    r'^\s*(?:\*\*)?'
+    r'^\s*(?:\*\*)?\[?'           # 선택적 대괄호 '[' 시작 허용
     r'([A-Za-z0-9가-힣]+)'       # 영어, 숫자, 한글 등 시작
-    r'[.)\]:\s]',                 # 구분자
+    r'[.)\]:\s]',                 # 구분자 (닫는 대괄호 ']' 포함)
     re.MULTILINE,
 )
+
+# 렌더링 마커 줄 — 분할/밀도 추정에서 제외해야 하는 패턴
+_MARKER_PREFIXES = frozenset({
+    '[TABLE', '[/TABLE', '[SECTION', '[CODING_REF', '[/CODING_REF',
+    '[SCALE_HEADER', '[COL_HEADER', '[ROW]', '[TEXTBOX',
+})
 
 
 def _estimate_section_size(section: DocxSection) -> int:
@@ -65,6 +70,9 @@ def _is_split_candidate(item) -> bool:
     if text and _SPLIT_POINT_RE.match(text):
         # 목록 항목이나 들여쓰기된 텍스트는 제외 (보기일 가능성)
         if item.list_level is not None or item.indent_level > 0:
+            return False
+        # 렌더링 마커 줄은 제외 ([TABLE:grid], [SECTION: ...] 등)
+        if any(text.startswith(prefix) for prefix in _MARKER_PREFIXES):
             return False
         return True
 

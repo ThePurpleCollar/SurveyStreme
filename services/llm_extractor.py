@@ -179,13 +179,19 @@ def _try_match_question(line: str):
     return None
 
 
-# 느슨한 밀도 추정용 패턴 — 영어/숫자/한글 모두 허용
+# 느슨한 밀도 추정용 패턴 — 영어/숫자/한글 + 대괄호 시작 허용
 _DENSITY_PATTERN = re.compile(
-    r'^\s*(?:\*\*)?'
-    r'([A-Za-z0-9가-힣]+[A-Za-z0-9가-힣\-]*)'  # 영어, 숫자, 한글, 하이픈
-    r'[.)\]:\s]',
+    r'^\s*(?:\*\*)?\[?'                           # 선택적 대괄호 '[' 시작
+    r'([A-Za-z0-9가-힣]+[A-Za-z0-9가-힣\-]*)'   # 영/숫/한 + 하이픈
+    r'[.)\]:\s]',                                 # 구분자
     re.MULTILINE,
 )
+
+# 렌더링 마커 접두어 — 밀도 추정에서 제외
+_MARKER_PREFIXES = frozenset({
+    '[TABLE', '[/TABLE', '[SECTION', '[CODING_REF', '[/CODING_REF',
+    '[SCALE_HEADER', '[COL_HEADER', '[ROW]', '[TEXTBOX',
+})
 
 
 def regex_pre_extract(annotated_text: str) -> List[dict]:
@@ -219,7 +225,8 @@ def regex_pre_extract(annotated_text: str) -> List[dict]:
                 if m:
                     # 목록 항목, 들여쓰기된 텍스트, 테이블 행은 제외
                     if not (stripped.startswith('#.') or stripped.startswith('- ')
-                            or stripped.startswith('|') or stripped.startswith('===')):
+                            or stripped.startswith('|') or stripped.startswith('===')
+                            or any(stripped.startswith(p) for p in _MARKER_PREFIXES)):
                         matched = (m.group(1), stripped[m.end():].strip(), None)
 
         if matched:
@@ -500,53 +507,83 @@ For each question, provide ALL of these fields:
 6. **filter**: Who answers this question. From "ASK IF", "ONLY IF", "모두에게", "[PN: ...]"
 7. **instructions**: Interviewer notes (e.g., "SHOW CARD", "ROTATE", "보기 로테이션")
 
-OUTPUT: Return ONLY valid JSON. No markdown code blocks, no explanation.
+OUTPUT: Return ONLY valid JSON matching this exact structure. Do NOT include markdown code blocks.
+
+EXAMPLE with 3 question types (SA, Grid, OE):
 
 {
   "questions": [
     {
-      "question_number": "string — the question identifier (e.g., 'Q1', 'SC2')",
-      "question_text": "string — question text WITHOUT number prefix or type brackets",
-      "question_type": "string or null — SA/MA/OE/NUMERIC/Npt/Npt x M/TopN/MATRIX/etc.",
+      "question_number": "DE1",
+      "question_text": "How would you describe the area where you live?",
+      "question_type": "SA",
       "answer_options": [
-        {"code": "string", "label": "string"}
+        {"code": "1", "label": "Urban"},
+        {"code": "2", "label": "Suburban"},
+        {"code": "3", "label": "Rural"}
       ],
-      "sub_items": [
-        "string — battery item label (for GRID/MATRIX questions only, else [])"
-      ],
-      "skip_logic": [
-        {"condition": "string", "target": "string"}
-      ],
-      "filter": "string or null — who answers this question",
-      "instructions": "string or null — interviewer notes (SHOW CARD, ROTATE, etc.)",
+      "sub_items": [],
+      "skip_logic": [{"condition": "DE1=3", "target": "DE5"}],
+      "filter": "All respondents",
+      "instructions": "DO NOT ROTATE",
       "programming_guide": {
         "rotate_options": false,
         "exclusive_codes": [],
         "dk_codes": [],
-        "na_codes": [],
+        "na_codes": ["99"],
         "pipe_from": null,
         "constant_sum_total": null,
         "rank_limit": null,
         "anchor_labels": {},
         "raw_notes": null
       }
+    },
+    {
+      "question_number": "Q5",
+      "question_text": "Please rate each brand on the following attributes.",
+      "question_type": "5pt x 3",
+      "answer_options": [
+        {"code": "1", "label": "Very Poor"},
+        {"code": "2", "label": "Poor"},
+        {"code": "3", "label": "Average"},
+        {"code": "4", "label": "Good"},
+        {"code": "5", "label": "Very Good"}
+      ],
+      "sub_items": ["Brand awareness", "Product quality", "Value for money"],
+      "skip_logic": [],
+      "filter": "Q1=1,2",
+      "instructions": "SHOW CARD B. ROTATE ITEMS",
+      "programming_guide": {
+        "rotate_options": true,
+        "exclusive_codes": [],
+        "dk_codes": [],
+        "na_codes": [],
+        "pipe_from": null,
+        "constant_sum_total": null,
+        "rank_limit": null,
+        "anchor_labels": {"1": "Very Poor", "5": "Very Good"},
+        "raw_notes": null
+      }
+    },
+    {
+      "question_number": "Q10",
+      "question_text": "Is there anything else you would like to tell us?",
+      "question_type": "OE",
+      "answer_options": [],
+      "sub_items": [],
+      "skip_logic": [],
+      "filter": null,
+      "instructions": null,
+      "programming_guide": null
     }
   ]
 }
 
 RULES:
-- Use [] for empty arrays, null for missing string/number values.
-- programming_guide: populate ONLY fields you can detect; leave others as shown above.
-  - rotate_options: true if "ROTATE", "randomize", "보기 로테이션" is mentioned
-  - exclusive_codes: list of code strings for "해당없음", "None of the above", "단독응답"
-  - dk_codes: list of code strings for "모르겠음", "DK", "잘 모름"
-  - na_codes: list of code strings for "해당없음", "N/A", "해당사항없음"
-  - pipe_from: question number string if piping is indicated (e.g., "Q3")
-  - constant_sum_total: number if "total must equal N" (e.g., 100)
-  - rank_limit: number if "Top N" ranking (e.g., 3 for "Top 3")
-  - anchor_labels: {"1": "Not at all", "5": "Extremely"} for scale anchors
-  - raw_notes: any remaining programming notes as a single string
-- If programming_guide has no detectable fields, omit it entirely or return null."""
+- Use [] for empty arrays, null for missing/undetectable values.
+- programming_guide: populate ONLY fields you can detect. If none, set to null.
+- sub_items: for GRID/MATRIX questions only (battery row items). Empty [] for others.
+- question_number: use whatever identifier appears in the document. If none, generate a unique one."""
 
 
 def _build_chunk_context(
@@ -910,8 +947,10 @@ def _call_openai(client: OpenAI, model: str, system_prompt: str,
 
 def _call_gemini(model: str, system_prompt: str,
                  user_prompt: str, llm_kwargs: dict) -> tuple:
-    """Vertex AI Gemini API 호출. Returns: (raw_content, finish_reason)"""
-    from vertexai.generative_models import GenerativeModel, GenerationConfig
+    """Vertex AI Gemini API 호출. 안전 필터 해제로 NDA/PII 문서 차단 방지."""
+    from vertexai.generative_models import (
+        GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold,
+    )
 
     gemini = GenerativeModel(model, system_instruction=system_prompt)
 
@@ -922,7 +961,17 @@ def _call_gemini(model: str, system_prompt: str,
         response_mime_type="application/json",
     )
 
-    response = gemini.generate_content(user_prompt, generation_config=gen_config)
+    # 설문지 분석을 위한 안전 필터 해제 (NDA/PII 텍스트 차단 방지)
+    safety_settings = {
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    }
+
+    response = gemini.generate_content(
+        user_prompt, generation_config=gen_config, safety_settings=safety_settings,
+    )
 
     if not response.candidates:
         raise ValueError("Gemini response blocked or empty (no candidates)")

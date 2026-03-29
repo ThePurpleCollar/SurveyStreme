@@ -156,7 +156,10 @@ def call_llm(prompt: str, model: str = DEFAULT_MODEL, *,
     def _do_call():
         if _is_gemini(model):
             init_gemini()
-            from vertexai.generative_models import GenerativeModel, GenerationConfig
+            from vertexai.generative_models import (
+                GenerativeModel, GenerationConfig,
+                HarmCategory, HarmBlockThreshold,
+            )
 
             gemini = GenerativeModel(model)
             config = GenerationConfig(
@@ -164,7 +167,15 @@ def call_llm(prompt: str, model: str = DEFAULT_MODEL, *,
                 top_p=top_p,
                 max_output_tokens=max_tokens,
             )
-            response = gemini.generate_content(prompt, generation_config=config)
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+            response = gemini.generate_content(
+                prompt, generation_config=config, safety_settings=safety_settings,
+            )
             if not response.candidates:
                 raise ValueError("Gemini response blocked or empty (no candidates)")
             try:
@@ -220,7 +231,10 @@ def call_llm_json(system_prompt: str, user_prompt: str, model: str = DEFAULT_MOD
     def _do_call():
         if _is_gemini(model):
             init_gemini()
-            from vertexai.generative_models import GenerativeModel, GenerationConfig
+            from vertexai.generative_models import (
+                GenerativeModel, GenerationConfig,
+                HarmCategory, HarmBlockThreshold,
+            )
 
             gemini = GenerativeModel(model, system_instruction=system_prompt)
             config = GenerationConfig(
@@ -229,7 +243,15 @@ def call_llm_json(system_prompt: str, user_prompt: str, model: str = DEFAULT_MOD
                 max_output_tokens=max_tokens,
                 response_mime_type="application/json",
             )
-            response = gemini.generate_content(user_prompt, generation_config=config)
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+            response = gemini.generate_content(
+                user_prompt, generation_config=config, safety_settings=safety_settings,
+            )
             if not response.candidates:
                 raise ValueError("Gemini JSON response blocked or empty (no candidates)")
             try:
