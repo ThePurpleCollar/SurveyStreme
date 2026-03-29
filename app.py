@@ -73,7 +73,7 @@ _PAGES = [
     "Questionnaire Analyzer",   # 0
     "Table Guide Builder",      # 1  (needs edited_df)
     "---",                      # 2
-    "Pre-Scripting Review",     # 3  (needs survey_doc)
+    "Quality Checker",          # 3  (needs survey_doc)
     "Skip Logic",               # 4  (needs survey_doc)
     "---",                      # 5
     "Path Simulator",           # 6  (needs survey_doc)
@@ -214,7 +214,7 @@ if page == 'Questionnaire Analyzer':
 elif page == 'Table Guide Builder':
     page_table_guide_builder()
 
-elif page == 'Pre-Scripting Review':
+elif page == 'Quality Checker':
     page_quality_checker()
 
 elif page == 'Skip Logic':
