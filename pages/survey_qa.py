@@ -12,9 +12,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 from services.path_simulator import (
     simulate_paths,
-    generate_persona_scenarios,
     SimulationResult,
-    PersonaScenario,
 )
 from services.skip_logic_service import build_skip_logic_graph
 from services.checklist_generator import generate_checklist
@@ -52,17 +50,12 @@ def page_survey_qa():
             result = simulate_paths(questions)
             st.session_state["qa_simulation"] = result
 
-            # 2. 페르소나 생성
-            status.write("페르소나 시나리오 생성 중...")
-            personas = generate_persona_scenarios(questions)
-            st.session_state["qa_personas"] = personas
-
-            # 3. 알고리즘 검출 (Quality Checker 통합)
+            # 2. 알고리즘 검출 (Quality Checker 통합)
             status.write("설문 구조 검증 중...")
             review = run_algorithmic_checks(questions)
             st.session_state["qa_review"] = review
 
-            # 4. 체크리스트 생성 (알고리즘만, LLM 없이)
+            # 3. 체크리스트 생성 (알고리즘만, LLM 없이)
             status.write("체크리스트 생성 중...")
             checklist = generate_checklist(questions, language="ko", use_llm=False)
             st.session_state["qa_checklist"] = checklist
@@ -70,7 +63,7 @@ def page_survey_qa():
             total_issues = review.critical_count + review.warning_count + len(checklist.items)
             status.update(
                 label=f"QA 분석 완료! 시나리오 {len(result.test_scenarios)}건, "
-                      f"페르소나 {len(personas)}건, 체크항목 {total_issues}건",
+                      f"체크항목 {total_issues}건",
                 state="complete",
             )
 
@@ -80,12 +73,11 @@ def page_survey_qa():
         return
 
     result = st.session_state["qa_simulation"]
-    personas = st.session_state.get("qa_personas", [])
     review = st.session_state.get("qa_review", ReviewReport())
     checklist = st.session_state.get("qa_checklist")
 
     # ── 요약 메트릭 ──
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("전체 경로", result.total_paths)
     with col2:
@@ -94,21 +86,16 @@ def page_survey_qa():
         st.metric("이슈", review.critical_count + review.warning_count,
                   delta=f"심각 {review.critical_count}" if review.critical_count else None,
                   delta_color="inverse")
-    with col4:
-        st.metric("페르소나", len(personas))
 
     st.divider()
 
     # ── 탭 ──
-    tab_logic, tab_persona, tab_branch, tab_checklist = st.tabs([
-        "로직 시각화", "페르소나 시나리오", "분기 테스트", "체크리스트"
+    tab_logic, tab_branch, tab_checklist = st.tabs([
+        "로직 시각화", "분기 테스트", "체크리스트"
     ])
 
     with tab_logic:
         _render_logic_visualization(questions, result)
-
-    with tab_persona:
-        _render_personas(personas)
 
     with tab_branch:
         _render_branch_tests(result)
@@ -118,7 +105,7 @@ def page_survey_qa():
 
     # ── 통합 다운로드 ──
     st.divider()
-    excel_data = _build_qa_excel(result, personas, review, checklist)
+    excel_data = _build_qa_excel(result, review, checklist)
     st.download_button(
         label="Survey QA 가이드 다운로드 (Excel)",
         data=excel_data,
@@ -177,39 +164,7 @@ def _render_logic_visualization(questions, result: SimulationResult):
 
 
 # ══════════════════════════════════════════════════════════════
-# 탭 2: 페르소나 시나리오
-# ══════════════════════════════════════════════════════════════
-
-def _render_personas(personas):
-    """페르소나 기반 테스트 시나리오."""
-    if not personas:
-        st.info("스크리닝/인구통계 문항이 없어 페르소나를 생성할 수 없습니다.")
-        return
-
-    st.subheader(f"페르소나 시나리오 ({len(personas)}건)")
-    st.caption("인구통계/스크리닝 문항의 보기 조합으로 자동 생성된 대표 응답자 경로입니다.")
-
-    for p in personas:
-        icon = "🚫" if p.is_termination else "👤"
-        with st.expander(
-            f"{icon} 시나리오 {p.persona_id}: {p.persona_label} ({p.path_length}문항)",
-            expanded=(p.persona_id <= 2),
-        ):
-            sel_parts = [f"**{qn}**: {p.answer_labels.get(qn, '')} ({code})"
-                         for qn, code in p.answer_selections.items()]
-            st.markdown("**응답 선택:** " + " | ".join(sel_parts))
-
-            path_str = " → ".join(p.expected_path[:15])
-            if len(p.expected_path) > 15:
-                path_str += f" ... (총 {len(p.expected_path)}문항)"
-            st.markdown(f"**경로:** {path_str}")
-
-            if p.is_termination:
-                st.warning("이 페르소나는 스크리닝에서 탈락합니다. 탈락 처리가 올바른지 확인하세요.")
-
-
-# ══════════════════════════════════════════════════════════════
-# 탭 3: 분기 테스트
+# 탭 2: 분기 테스트
 # ══════════════════════════════════════════════════════════════
 
 def _render_branch_tests(result: SimulationResult):
@@ -244,7 +199,7 @@ def _render_branch_tests(result: SimulationResult):
 
 
 # ══════════════════════════════════════════════════════════════
-# 탭 4: 체크리스트
+# 탭 3: 체크리스트
 # ══════════════════════════════════════════════════════════════
 
 def _render_checklist(review: ReviewReport, checklist, questions):
@@ -317,7 +272,7 @@ def _render_checklist(review: ReviewReport, checklist, questions):
 # 통합 엑셀
 # ══════════════════════════════════════════════════════════════
 
-def _build_qa_excel(result, personas, review, checklist) -> bytes:
+def _build_qa_excel(result, review, checklist) -> bytes:
     """Survey QA 통합 엑셀."""
     wb = Workbook()
     hdr_fill = PatternFill(start_color="0033A0", end_color="0033A0", fill_type="solid")
@@ -331,27 +286,9 @@ def _build_qa_excel(result, personas, review, checklist) -> bytes:
             cell.font = hdr_font
             cell.alignment = center
 
-    # ── Sheet 1: 페르소나 시나리오 ──
-    ws1 = wb.active
-    ws1.title = "페르소나 시나리오"
-    ws1.append(["#", "페르소나", "응답 선택", "예상 경로", "경로 길이", "탈락"])
-    _style_header(ws1)
-
-    for p in (personas or []):
-        sel = ", ".join(f"{qn}: {p.answer_labels.get(qn, '')}({code})"
-                        for qn, code in p.answer_selections.items())
-        ws1.append([p.persona_id, p.persona_label, sel,
-                    " → ".join(p.expected_path[:15]), p.path_length,
-                    "탈락" if p.is_termination else ""])
-
-    for row in ws1.iter_rows(min_row=2):
-        for cell in row:
-            cell.alignment = wrap
-    for col, w in zip('ABCDEF', [5, 35, 45, 50, 10, 8]):
-        ws1.column_dimensions[col].width = w
-
-    # ── Sheet 2: 분기 테스트 ──
-    ws2 = wb.create_sheet("분기 테스트")
+    # ── Sheet 1: 분기 테스트 ──
+    ws2 = wb.active
+    ws2.title = "분기 테스트"
     ws2.append(["#", "우선순위", "응답 선택", "예상 경로", "검증 분기"])
     _style_header(ws2)
 
