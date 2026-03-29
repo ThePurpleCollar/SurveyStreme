@@ -1026,7 +1026,13 @@ def extract_questions_from_chunk(
                              f"(response length={len(raw_content)}, finish_reason={finish_reason})")
                 return []
 
-        questions = parsed.get("questions", [])
+        # LLM이 {"questions": [...]} 또는 직접 [...] 배열을 반환할 수 있음
+        if isinstance(parsed, list):
+            questions = parsed
+        elif isinstance(parsed, dict):
+            questions = parsed.get("questions", [])
+        else:
+            return []
         if not isinstance(questions, list):
             return []
 
