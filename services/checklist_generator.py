@@ -119,6 +119,9 @@ def _check_skip_logic(
     """각 스킵 규칙에 대한 체크항목 생성."""
     items: List[ChecklistItem] = []
 
+    # 문항 순서 인덱스 (건너뛴 문항 표시용)
+    qn_index = {q.question_number: i for i, q in enumerate(questions)}
+
     for q in questions:
         if not q.skip_logic:
             continue
@@ -126,29 +129,40 @@ def _check_skip_logic(
             parsed = parse_target(sl.target)
             target_display = parsed or sl.target
 
+            # 건너뛰는 문항 목록 계산
+            src_idx = qn_index.get(q.question_number, -1)
+            tgt_idx = qn_index.get(target_display, -1)
+            skipped_qns = []
+            if src_idx >= 0 and tgt_idx > src_idx:
+                skipped_qns = [questions[i].question_number
+                               for i in range(src_idx + 1, min(tgt_idx, len(questions)))]
+            skipped_str = ", ".join(skipped_qns[:5])
+            if len(skipped_qns) > 5:
+                skipped_str += f" 외 {len(skipped_qns) - 5}개"
+
             if lang == "ko":
                 title = f"{q.question_number} 스킵 로직 검증"
-                detail = (
-                    f"{q.question_number}에서 조건 '{sl.condition}' 충족 시 "
-                    f"{target_display}(으)로 이동하는지 확인"
-                )
-                expected = (
-                    f"해당 조건 선택 시 {target_display}(으)로 정확히 이동. "
-                    f"중간 문항은 표시되지 않아야 함."
-                )
+                steps = [
+                    f"1. {q.question_number} 문항에서 조건 '{sl.condition}'에 해당하는 보기를 선택",
+                    f"2. 다음 화면이 {target_display} 문항인지 확인",
+                ]
+                if skipped_qns:
+                    steps.append(f"3. {skipped_str} 문항이 표시되지 않는지 확인")
+                detail = "\n".join(steps)
+                expected = f"{target_display}(으)로 이동. {skipped_str} 비표시." if skipped_qns else f"{target_display}(으)로 이동."
             else:
                 title = f"{q.question_number} skip logic verification"
-                detail = (
-                    f"When condition '{sl.condition}' is met at {q.question_number}, "
-                    f"verify navigation to {target_display}"
-                )
-                expected = (
-                    f"Selecting the condition should navigate to {target_display}. "
-                    f"Intermediate questions should be skipped."
-                )
+                steps = [
+                    f"1. At {q.question_number}, select answer matching '{sl.condition}'",
+                    f"2. Verify next screen shows {target_display}",
+                ]
+                if skipped_qns:
+                    steps.append(f"3. Verify {skipped_str} are NOT displayed")
+                detail = "\n".join(steps)
+                expected = f"Navigate to {target_display}. {skipped_str} skipped." if skipped_qns else f"Navigate to {target_display}."
 
             items.append(ChecklistItem(
-                item_id=0,  # 나중에 부여
+                item_id=0,
                 category="SKIP_LOGIC",
                 priority="HIGH",
                 question_number=q.question_number,
@@ -157,6 +171,39 @@ def _check_skip_logic(
                 expected_behavior=expected,
                 source="ALGORITHMIC",
             ))
+
+            # ── Negative 테스트: 스킵이 동작하지 않아야 하는 경우 ──
+            next_qn = questions[src_idx + 1].question_number if src_idx + 1 < len(questions) else None
+            if next_qn and next_qn != target_display:
+                if lang == "ko":
+                    neg_title = f"{q.question_number} 스킵 미동작 검증 (Negative)"
+                    neg_steps = [
+                        f"1. {q.question_number} 문항에서 조건 '{sl.condition}'에 해당하지 않는 보기를 선택",
+                        f"2. 다음 화면이 {next_qn} 문항(순차 진행)인지 확인",
+                        f"3. {target_display}(으)로 건너뛰지 않는지 확인",
+                    ]
+                    neg_detail = "\n".join(neg_steps)
+                    neg_expected = f"순차 진행하여 {next_qn}(으)로 이동. {target_display}(으)로 건너뛰면 안 됨."
+                else:
+                    neg_title = f"{q.question_number} skip non-trigger verification (Negative)"
+                    neg_steps = [
+                        f"1. At {q.question_number}, select answer NOT matching '{sl.condition}'",
+                        f"2. Verify next screen shows {next_qn} (sequential)",
+                        f"3. Verify skip to {target_display} does NOT trigger",
+                    ]
+                    neg_detail = "\n".join(neg_steps)
+                    neg_expected = f"Sequential to {next_qn}. Should NOT skip to {target_display}."
+
+                items.append(ChecklistItem(
+                    item_id=0,
+                    category="SKIP_LOGIC",
+                    priority="MEDIUM",
+                    question_number=q.question_number,
+                    title=neg_title,
+                    detail=neg_detail,
+                    expected_behavior=neg_expected,
+                    source="ALGORITHMIC",
+                ))
 
     return items
 
@@ -275,17 +322,21 @@ def _check_filter_validity(
             if lang == "ko":
                 title = f"{q.question_number} 필터 조건 동작 확인"
                 detail = (
-                    f"{q.question_number}은(는) '{q.filter_condition}' 조건으로 필터링됩니다. "
-                    f"조건을 충족하지 않는 응답자에게 이 문항이 표시되지 않는지 확인하세요."
+                    f"1. 먼저 {ref_qn} 문항에서 '{q.filter_condition}' 조건을 충족하는 보기를 선택\n"
+                    f"2. {q.question_number} 문항이 표시되는지 확인\n"
+                    f"3. 다시 {ref_qn}에서 조건을 충족하지 않는 보기를 선택\n"
+                    f"4. {q.question_number} 문항이 표시되지 않는지 확인"
                 )
-                expected = f"필터 조건 미충족 시 {q.question_number} 비표시"
+                expected = f"조건 충족 시 {q.question_number} 표시, 미충족 시 비표시"
             else:
                 title = f"{q.question_number} filter condition check"
                 detail = (
-                    f"{q.question_number} is filtered by '{q.filter_condition}'. "
-                    f"Verify that respondents not meeting the condition do not see this question."
+                    f"1. At {ref_qn}, select answer matching '{q.filter_condition}'\n"
+                    f"2. Verify {q.question_number} is displayed\n"
+                    f"3. At {ref_qn}, select answer NOT matching the condition\n"
+                    f"4. Verify {q.question_number} is NOT displayed"
                 )
-                expected = f"{q.question_number} should not display when filter condition is not met"
+                expected = f"{q.question_number} shown when filter met, hidden when not met"
 
             items.append(ChecklistItem(
                 item_id=0,
@@ -337,20 +388,28 @@ def _check_exclusive_options(
 
         for opt in exclusive_opts:
             if qtype in ("MA", "MULTI"):
+                # 다른 보기 중 하나 예시
+                other_opt = next((o for o in q.answer_options if o.code != opt.code), None)
+                other_label = f"'{other_opt.code}. {other_opt.label}'" if other_opt else "다른 보기"
+
                 if lang == "ko":
                     title = f"{q.question_number} 배타적 보기 확인 ({opt.code})"
                     detail = (
-                        f"{q.question_number} (MA)에서 '{opt.code}. {opt.label}' 선택 시 "
-                        f"다른 보기와 동시 선택이 불가능한지 확인"
+                        f"1. {q.question_number}에서 {other_label}을 먼저 선택\n"
+                        f"2. '{opt.code}. {opt.label}'을 추가 선택\n"
+                        f"3. 이전에 선택한 {other_label}이 자동 해제되는지 확인\n"
+                        f"4. 반대로 '{opt.label}' 선택 후 {other_label} 선택 시 '{opt.label}'이 해제되는지 확인"
                     )
-                    expected = f"'{opt.label}' 선택 시 다른 보기 자동 해제"
+                    expected = f"'{opt.label}' 선택 시 다른 보기 자동 해제, 역방향도 동일"
                 else:
                     title = f"{q.question_number} exclusive option check ({opt.code})"
                     detail = (
-                        f"In {q.question_number} (MA), verify that selecting "
-                        f"'{opt.code}. {opt.label}' deselects all other options"
+                        f"1. At {q.question_number}, select {other_label}\n"
+                        f"2. Then select '{opt.code}. {opt.label}'\n"
+                        f"3. Verify {other_label} is auto-deselected\n"
+                        f"4. Reverse: select '{opt.label}' first, then {other_label} — verify '{opt.label}' deselects"
                     )
-                    expected = f"Selecting '{opt.label}' should deselect all other options"
+                    expected = f"'{opt.label}' and other options are mutually exclusive"
 
                 items.append(ChecklistItem(
                     item_id=0,

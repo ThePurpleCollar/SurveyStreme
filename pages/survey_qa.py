@@ -203,8 +203,25 @@ def _render_branch_tests(result: SimulationResult):
 # ══════════════════════════════════════════════════════════════
 
 def _render_checklist(review: ReviewReport, checklist, questions):
-    """알고리즘 검출 + 체크리스트 통합."""
+    """알고리즘 검출 + 체크리스트 + 파싱 실패 수동 확인 통합."""
     all_items = []
+
+    # 파싱 실패 조건 → 수동 확인 항목으로 추가
+    result = st.session_state.get("qa_simulation")
+    if result and result.unparsed_conditions:
+        for qn, cond in result.unparsed_conditions:
+            all_items.append({
+                "severity": "warning",
+                "category": "수동 확인 필요",
+                "question": qn,
+                "title": f"{qn} 스킵 조건 수동 확인 필요",
+                "detail": (
+                    f"조건 '{cond}'를 자동 파싱할 수 없습니다.\n"
+                    f"1. 원본 설문지에서 {qn}의 스킵 조건을 직접 확인\n"
+                    f"2. 해당 조건 충족 시 올바른 문항으로 이동하는지 수동 테스트"
+                ),
+                "source": "파싱 실패",
+            })
 
     # Quality Checker 알고리즘 검출 결과
     for item in review.items:
@@ -312,42 +329,48 @@ def _build_qa_excel(result, review, checklist) -> bytes:
 
     # ── Sheet 3: 체크리스트 ──
     ws3 = wb.create_sheet("체크리스트")
-    ws3.append(["확인", "심각도", "카테고리", "문항", "제목", "상세"])
+    ws3.append(["순서", "확인", "심각도", "카테고리", "문항", "제목", "상세"])
     _style_header(ws3)
 
     critical_fill = PatternFill(start_color="FFCDD2", end_color="FFCDD2", fill_type="solid")
     warning_fill = PatternFill(start_color="FFF9C4", end_color="FFF9C4", fill_type="solid")
 
+    seq = [0]  # 실행 순서 카운터
+
+    def _add_check_row(sev_label, category, qn, title, detail, fill=None):
+        seq[0] += 1
+        row_num = ws3.max_row + 1
+        ws3.append([seq[0], "☐", sev_label, category, qn, title, detail])
+        if fill:
+            for cell in ws3[row_num]:
+                cell.fill = fill
+
+    # 파싱 실패 조건 → 수동 확인 항목
+    if result and result.unparsed_conditions:
+        for qn, cond in result.unparsed_conditions:
+            _add_check_row("경고", "수동 확인", qn,
+                           f"{qn} 스킵 조건 수동 확인",
+                           f"조건 '{cond}' 자동 파싱 불가. 원본 확인 후 수동 테스트 필요.",
+                           warning_fill)
+
     # Quality Checker 검출
     for item in (review.items if review else []):
-        row_num = ws3.max_row + 1
-        ws3.append(["☐", SEVERITY_LABELS.get(item.severity, ""),
-                    CATEGORY_LABELS.get(item.category, item.category),
-                    item.question_number, item.title, item.detail])
-        if item.severity == "critical":
-            for cell in ws3[row_num]:
-                cell.fill = critical_fill
-        elif item.severity == "warning":
-            for cell in ws3[row_num]:
-                cell.fill = warning_fill
+        fill = critical_fill if item.severity == "critical" else (warning_fill if item.severity == "warning" else None)
+        _add_check_row(SEVERITY_LABELS.get(item.severity, ""),
+                       CATEGORY_LABELS.get(item.category, item.category),
+                       item.question_number, item.title, item.detail, fill)
 
     # Checklist Generator 검출
     pri_map = {"HIGH": "심각", "MEDIUM": "경고", "LOW": "참고"}
     for item in (checklist.items if checklist else []):
-        row_num = ws3.max_row + 1
-        ws3.append(["☐", pri_map.get(item.priority, ""),
-                    item.category, item.question_number, item.title, item.detail])
-        if item.priority == "HIGH":
-            for cell in ws3[row_num]:
-                cell.fill = critical_fill
-        elif item.priority == "MEDIUM":
-            for cell in ws3[row_num]:
-                cell.fill = warning_fill
+        fill = critical_fill if item.priority == "HIGH" else (warning_fill if item.priority == "MEDIUM" else None)
+        _add_check_row(pri_map.get(item.priority, ""),
+                       item.category, item.question_number, item.title, item.detail, fill)
 
     for row in ws3.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = wrap
-    for col, w in zip('ABCDEF', [5, 8, 14, 10, 40, 55]):
+    for col, w in zip('ABCDEFG', [5, 5, 8, 14, 10, 40, 55]):
         ws3.column_dimensions[col].width = w
 
     buffer = io.BytesIO()
