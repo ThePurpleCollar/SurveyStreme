@@ -1145,13 +1145,13 @@ def merge_chunk_results(chunk_results: List[List[dict]]) -> List[dict]:
 def _max_questions_for_model(model: str) -> int:
     """모델별 청크당 최대 문항 수.
 
-    각 문항 JSON ≈ 100 토큰.
-    Gemini: 65K 출력 → 안전하게 400문항 (40K), 대부분 재청킹 불필요
-    기타: 16K 출력 → 80문항
+    각 문항 JSON ≈ 200-300 토큰 (보기, 스킵, 필터, programming_guide 포함).
+    Gemini: 65K 출력 → 안전하게 150문항 (~45K 토큰)
+    기타: 16K 출력 → 60문항
     """
     if _is_gemini(model):
-        return 400
-    return 80
+        return 150
+    return 60
 
 
 def _rechunk_by_question_count(chunks: List[str], pre_per_chunk: List[List[dict]],
