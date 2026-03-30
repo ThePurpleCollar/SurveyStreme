@@ -345,14 +345,32 @@ def _classify_table(rows: List[List[str]]) -> str:
         if first_col_values and qn_count / len(first_col_values) >= 0.5 and qn_count >= 2:
             return "multi_question"
 
-    # ── code_label: 2열 표, 첫 열이 숫자/코드, 두 번째 열이 텍스트 ──
-    if col_count == 2 and row_count >= 2:
+    # ── code_label: 보기 표 (코드+라벨 구조) ──
+    # 2~4열, 첫 열이 짧은 코드(숫자 또는 1~3자 문자), 나머지가 라벨
+    if 2 <= col_count <= 4 and row_count >= 2:
         data_rows = rows[1:] if len(rows) > 1 else rows
-        numeric_first = sum(
-            1 for r in data_rows
-            if r[0].strip() and r[0].strip().lstrip('-').isdigit()
-        )
-        if data_rows and numeric_first / len(data_rows) >= 0.6:
+        code_count = 0
+        for r in data_rows:
+            cell = r[0].strip() if r else ""
+            if not cell:
+                continue
+            # 숫자 코드: 1, 2, 99, -1
+            if cell.lstrip('-').isdigit():
+                code_count += 1
+            # 짧은 문자 코드: a, b, A, B, A1
+            elif len(cell) <= 3 and cell[0].isalpha():
+                code_count += 1
+            # "1." "2)" 형태
+            elif _re.match(r'^\d+[.)]$', cell):
+                code_count += 1
+        if data_rows and code_count / len(data_rows) >= 0.5:
+            return "code_label"
+
+    # ── code_label 폴백: 1행 가로 배치 보기 (| 1.남성 | 2.여성 | 3.기타 |) ──
+    if row_count == 1 and col_count >= 3:
+        cells = [c.strip() for c in rows[0] if c.strip()]
+        coded_cells = sum(1 for c in cells if _re.match(r'^\d+[.)\s]', c))
+        if cells and coded_cells / len(cells) >= 0.6:
             return "code_label"
 
     # ── grid: 첫 행이 숫자 척도, 나머지 행이 항목 ──
