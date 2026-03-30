@@ -1,45 +1,66 @@
-# Survey Stream (questvoyager)
+# Survey Stream
 
-설문지(DOCX) 자동 분석 및 Table Guide 생성 Streamlit 웹앱.
+설문지(DOCX) 자동 분석, Table Guide 생성, 로직 검증 Streamlit 웹앱.
+입소스 한국 리서처를 위한 MR 워크플로우 효율화 도구.
 
 ## Tech Stack
-- Python 3.11+, Streamlit, Poetry
-- LLM: Gemini 2.5 Pro (문항 추출), GPT-5 (Title/Grammar/Quality), GPT-4.1-mini (Net·Length/Checklist)
+- Python 3.11+, Streamlit, uv
+- LLM: Gemini 2.5 Pro (문항 추출, Title, Banner), Gemini 2.5 Flash (체크리스트, 문법), GPT-5 (품질 분석)
 - LLM 프록시: LiteLLM (Ipsos 내부)
-- 주요 라이브러리: python-docx, pandas, openai, openpyxl
-- NOTE: PDF 스코프 제외 결정 (2026-03). 현재 DOCX-only 파이프라인만 유지.
+- 주요 라이브러리: python-docx, pandas, openai, openpyxl, google-cloud-aiplatform
+- DOCX-only 파이프라인 (PDF 스코프 제외, 2026-03)
+
+## App Structure (3 메뉴)
+```
+Questionnaire Analyzer    # 설문지 업로드 → AI 문항 추출 → 커버리지 리포트
+Table Guide Builder       # Table Title + Banner 생성 → DP용 엑셀 출력
+Logic Checker             # 로직 시각화 + 분기 테스트 + 체크리스트 통합
+```
 
 ## Project Structure
 ```
-app.py                    # 메인 진입점 + 사이드바 + 페이지 라우팅
-pages/                    # UI 페이지 (doc_analyzer, table_guide, quality_checker 등)
-services/                 # 비즈니스 로직 (llm_client, llm_extractor, docx_parser 등)
-models/                   # 데이터 모델 (SurveyQuestion, SurveyDocument)
-ui/                       # UI 컴포넌트 (tree_view, spreadsheet, download)
+app.py                    # 메인 진입점 + 사이드바 (3메뉴) + 페이지 라우팅
+pages/
+  doc_analyzer.py         # Questionnaire Analyzer UI
+  table_guide.py          # Table Guide Builder UI (Title + Banner + Export)
+  survey_qa.py            # Logic Checker UI (시각화 + 분기 + 체크리스트)
+services/
+  llm_client.py           # LLM 게이트웨이 (Gemini/GPT, 재시도, Safety Filter 해제)
+  llm_extractor.py        # LLM 문항 추출 파이프라인 (Concept-based Prompting)
+  docx_parser.py          # DOCX 파싱 (병합 셀, 취소선, 표 분류, 텍스트 박스)
+  docx_renderer.py        # 어노테이션 텍스트 변환 (타입별 마커)
+  chunker.py              # 메타데이터 기반 청킹 (Dual-Track)
+  postprocessor.py        # SummaryType, TableNumber 계산
+  coverage_checker.py     # 추출 커버리지 검증 (원본 vs 추출 비교)
+  prescripting_checker.py # 구조 검증 (코드 중복, 스킵 대상, 필터 참조)
+  table_guide_service.py  # Table Guide 생성 (전문가 합의 배너)
+  path_simulator.py       # 경로 시뮬레이션 + 테스트 시나리오
+  checklist_generator.py  # 체크리스트 생성 (step-by-step + Negative)
+  skip_logic_service.py   # 스킵 로직 그래프 + Graphviz DOT
+  survey_context.py       # Study Brief 컨텍스트 빌더
+models/
+  survey.py               # SurveyQuestion, SurveyDocument, Banner, ProgrammingGuide
+ui/
+  tree_view.py            # 문항 트리뷰
+  spreadsheet.py          # 편집 테이블
+  download.py             # CSV/Excel 다운로드 (Banner Layout 포함)
 ```
 
 ## Coding Conventions
 - 함수/변수: snake_case, 클래스: PascalCase
-- private 함수: `_` 접두사 (예: `_parse_paragraph`)
-- docstring: 한국어 또는 영어 (기존 파일의 언어를 따름)
+- private 함수: `_` 접두사
+- UI 메시지: 한국어 (메뉴명/기능명은 영어 유지)
 - 타입 힌트: 모든 함수 시그니처에 사용
 - import 순서: stdlib → third-party → local
-- Streamlit 세션 상태 키: snake_case 문자열 (예: `"survey_document"`, `"edited_df"`)
+- UI 코드에 비즈니스 로직을 넣지 말 것 (pages/ → services/ 호출 구조 유지)
 
 ## Critical Rules
-- `st.session_state`에 저장되는 핵심 객체는 반드시 `SurveyDocument` 타입을 사용할 것
-- LLM 호출은 반드시 `services/llm_client.py`의 `call_llm()` 또는 `call_llm_json()`을 경유할 것
-- 새 LLM 프롬프트 작성 시 한국어/영어 양쪽 버전 모두 작성할 것
-- UI 코드에 비즈니스 로직을 넣지 말 것 (pages/ → services/ 호출 구조 유지)
-- `.env` 파일에 있는 API 키를 코드에 하드코딩하지 말 것
+- `st.session_state`에 저장되는 핵심 객체는 반드시 `SurveyDocument` 타입
+- LLM 호출은 반드시 `services/llm_client.py`의 `call_llm()` 또는 `call_llm_json()` 경유
+- `.env` 파일의 API 키를 코드에 하드코딩 금지
+- Gemini Safety Filter는 BLOCK_NONE으로 해제 (NDA/PII 설문지 지원)
 
-## Verification (Definition of Done)
-모든 변경 작업 완료 후 아래를 반드시 실행:
-1. `python -c "from app import *; print('import OK')"` — 전체 import 체인 확인
-2. `python -m pytest tests/ -v` — 테스트 존재 시 실행
-3. 변경된 파일에 대해 `python -m py_compile <file>` — 문법 오류 확인
-4. 관련 함수에 대해 간단한 smoke test 스크립트 작성 후 실행
-
-## Task Workflow
-작업 흐름은 `docs/roadmap.md`에서 관리. 자세한 내용은 @docs/roadmap.md 참조.
-개별 작업의 상세 스펙은 @docs/tasks/ 폴더의 파일 참조.
+## Verification
+1. `python -c "from app import *; print('import OK')"` — import 체인 확인
+2. `python -m pytest tests/ -v` — 테스트 실행
+3. `python -m py_compile <file>` — 문법 오류 확인
