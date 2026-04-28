@@ -1,5 +1,9 @@
 import os
 import time
+import hashlib
+import io
+from concurrent.futures import ThreadPoolExecutor
+from queue import Empty, Queue
 
 import streamlit as st
 from services.llm_client import MODEL_DOC_ANALYZER
@@ -7,16 +11,37 @@ from services.postprocessor import apply_postprocessing
 from services.docx_parser import parse_docx
 from services.docx_renderer import render_sections_to_annotated_text
 from services.chunker import chunk_sections
-from services.llm_extractor import extract_survey_questions
+from services.docx_preflight import check_docx_preflight
+from services.llm_extractor import LLMExtractionError, extract_survey_questions
 from services.coverage_checker import check_extraction_coverage
+from services.coverage_user_summary import summarize_coverage_for_user
 from models.survey import SurveyDocument, SurveyQuestion
 from services.table_guide_service import analyze_survey_intelligence
 from services.survey_context import enrich_document
 from ui.tree_view import render_tree_view
-from ui.spreadsheet import render_spreadsheet_view
+from ui.spreadsheet import apply_spreadsheet_edits_to_document, render_spreadsheet_view
 
 
-def page_document_processing(uploaded_file, client):
+DOCX_STRUCTURE_CACHE_VERSION = "docx-structure-v2"
+
+
+def _hash_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+@st.cache_data(show_spinner=False)
+def _parse_and_chunk_docx_cached(
+    file_bytes: bytes,
+    filename: str,
+    cache_version: str,
+):
+    """Parse and chunk a DOCX once per file content and parser version."""
+    sections = parse_docx(io.BytesIO(file_bytes))
+    chunks = chunk_sections(sections)
+    return sections, chunks
+
+
+def page_document_processing(uploaded_file, client=None):
     st.title('Questionnaire Analyzer')
 
     # 세션 로드 결과가 있으면 파일 업로드 없이도 즉시 표시
@@ -80,12 +105,20 @@ def _process_docx(uploaded_file, client):
 
     # ── 추출 파이프라인 시작 ──
     model = MODEL_DOC_ANALYZER
+    file_bytes = uploaded_file.getvalue()
+    file_digest = _hash_bytes(file_bytes)
 
     with st.status("1/5단계: DOCX 구조 파싱 중...", expanded=True) as status:
+        phase_line = status.empty()
+        detail_line = status.empty()
         # Phase 1: DOCX 파싱
-        status.write("DOCX 구조를 분석하고 있습니다 (스타일, 목록, 표)...")
+        phase_line.write("DOCX 구조를 분석하고 있습니다 (스타일, 목록, 표)...")
         try:
-            sections = parse_docx(uploaded_file)
+            sections, chunks = _parse_and_chunk_docx_cached(
+                file_bytes,
+                uploaded_file.name,
+                DOCX_STRUCTURE_CACHE_VERSION,
+            )
         except Exception as e:
             status.update(label="DOCX 파싱 실패", state="error")
             st.error(f"DOCX 파싱 오류: {e}")
@@ -98,12 +131,16 @@ def _process_docx(uploaded_file, client):
 
         total_paragraphs = sum(len(s.paragraphs) for s in sections)
         total_tables = sum(len(s.tables) for s in sections)
-        status.write(f"✅ 파싱 완료: {len(sections)}개 섹션, "
-                     f"{total_paragraphs}개 단락, {total_tables}개 표")
+        preflight = check_docx_preflight(sections)
+        phase_line.write(f"✅ 파싱 완료: {len(sections)}개 섹션, "
+                         f"{total_paragraphs}개 단락, {total_tables}개 표")
 
         # Phase 1 cont: 어노테이션 텍스트 + 청킹
-        chunks = chunk_sections(sections)
-        status.write(f"✅ AI 처리를 위해 {len(chunks)}개 청크로 분할")
+        detail_line.write(
+            f"AI 처리를 위해 {len(chunks)}개 청크로 분할 | "
+            f"Parse cache key: {file_digest[:12]}"
+        )
+        _render_preflight_report(preflight)
 
         # Phase 3 준비: LLM 추출 (적응형 재청킹 포함)
         # 동적 업데이트용 컨테이너
@@ -119,10 +156,11 @@ def _process_docx(uploaded_file, client):
 
             if event == "regex_done":
                 status.update(label="2/5단계: 문항 패턴 스캔 중...")
-                status.write(f"✅ 빠른 스캔으로 ~{data['total_hints']}개 문항 후보 발견")
+                phase_line.write(f"✅ 빠른 스캔으로 ~{data['total_hints']}개 문항 후보 발견")
+                detail_line.write("AI 추출을 준비하고 있습니다...")
 
             elif event == "rechunk":
-                status.write(
+                detail_line.write(
                     f"ℹ️ 적응형 재분할: {data['original_chunks']} → "
                     f"{data['new_chunks']}개 청크 ({data['reason']})"
                 )
@@ -135,6 +173,10 @@ def _process_docx(uploaded_file, client):
                 )
                 frac = max(chunks_done[0] / total, 0.0)
                 progress_bar.progress(frac)
+                detail_line.write(
+                    f"청크 {data['chunk_index'] + 1}/{total} 처리 중 | "
+                    f"후보 {data.get('regex_hints', 0)}개"
+                )
 
             elif event == "chunk_done":
                 chunks_done[0] += 1
@@ -146,9 +188,9 @@ def _process_docx(uploaded_file, client):
 
                 # 청크별 완료 로그
                 e_m, e_s = divmod(int(elapsed), 60)
-                status.write(
-                    f"✅ 청크 {data['chunk_index'] + 1}/{total}: "
-                    f"{extracted}개 문항 ({e_m}:{e_s:02d})"
+                phase_line.write(
+                    f"✅ 청크 {done}/{total} 완료 | 이번 청크 {extracted}개 | "
+                    f"누적 {total_questions_found[0]}개"
                 )
 
                 status.update(
@@ -159,18 +201,15 @@ def _process_docx(uploaded_file, client):
                 remaining = (elapsed / done * (total - done)) if done > 0 else 0
                 remain_m, remain_s = divmod(int(remaining), 60)
                 stats_line.write(
-                    f"📊 현재까지 **{total_questions_found[0]}**개 문항 발견 "
-                    f"| ⏱ 경과: {e_m}:{e_s:02d} "
-                    f"| 남은 시간: ~{remain_m}:{remain_s:02d}"
+                    f"경과 {e_m}:{e_s:02d} | 남은 시간 ~{remain_m}:{remain_s:02d}"
                 )
 
             elif event == "chunk_error":
-                status.write(
-                    f"⚠️ 청크 {data['chunk_index'] + 1} 실패: {data['error']}"
-                )
+                phase_line.write(f"⚠️ 청크 {data['chunk_index'] + 1} 실패")
+                detail_line.write(str(data["error"]))
 
             elif event == "missed_questions":
-                status.write(
+                detail_line.write(
                     f"⚠️ 패턴 스캔에서 감지되었으나 AI가 놓친 문항 {data['count']}건: "
                     f"{', '.join(data['question_numbers'][:10])}"
                     f"{'...' if data['count'] > 10 else ''}"
@@ -180,16 +219,58 @@ def _process_docx(uploaded_file, client):
                 progress_bar.progress(1.0)
                 missed = data.get('missed_count', 0)
                 missed_note = f" (⚠️ {missed}건 누락 가능)" if missed else ""
-                stats_line.write(
+                phase_line.write(
                     f"📊 총 **{data['total_questions']}**개 문항 추출 완료{missed_note}"
                 )
+                stats_line.write("AI 추출 단계가 완료되었습니다.")
 
-        questions = extract_survey_questions(
-            client=client,
-            chunks=chunks,
-            model=model,
-            progress_callback=on_progress,
-        )
+        event_queue = Queue()
+
+        def queued_progress(event, data):
+            event_queue.put((event, data))
+
+        def drain_progress_events():
+            drained = False
+            while True:
+                try:
+                    event, data = event_queue.get_nowait()
+                except Empty:
+                    return drained
+                on_progress(event, data)
+                drained = True
+
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    extract_survey_questions,
+                    client=client,
+                    chunks=chunks,
+                    model=model,
+                    progress_callback=queued_progress,
+                )
+                heartbeat = 0
+                while not future.done():
+                    got_event = drain_progress_events()
+                    elapsed = time.time() - start_time
+                    e_m, e_s = divmod(int(elapsed), 60)
+                    if not got_event:
+                        dots = "." * ((heartbeat % 3) + 1)
+                        phase_line.write(
+                            f"AI 응답을 기다리는 중{dots} "
+                            f"누적 {total_questions_found[0]}개 문항"
+                        )
+                        stats_line.write(f"경과 {e_m}:{e_s:02d} | 화면은 계속 갱신 중")
+                        heartbeat += 1
+                    time.sleep(1)
+                drain_progress_events()
+                questions = future.result()
+        except LLMExtractionError as e:
+            status.update(label="AI extraction failed", state="error")
+            st.error(
+                "AI extraction could not run. The document was parsed, but the "
+                f"LLM request failed before extraction completed.\n\n{e}"
+            )
+            return
 
         elapsed_total = time.time() - start_time
         em, es = divmod(int(elapsed_total), 60)
@@ -272,35 +353,109 @@ def _process_docx(uploaded_file, client):
 
 
 def _render_coverage_report(report):
-    """Extraction Coverage Report UI 렌더링."""
-    from services.coverage_checker import CoverageReport
+    """Render extraction diagnostics as user-facing review guidance."""
+    summary = summarize_coverage_for_user(report)
 
-    def _bar(label, extracted, total, emoji_ok="✅", emoji_warn="⚠️"):
-        if total == 0:
-            return f"{emoji_ok} **{label}**: 해당 없음"
-        pct = extracted / total * 100
-        emoji = emoji_ok if pct >= 80 else emoji_warn
-        return f"{emoji} **{label}**: {extracted}/{total} ({pct:.0f}%)"
+    with st.container(border=True):
+        st.markdown("### 추출 결과 점검")
+        body = (
+            f"**상태: {summary.status_label}**\n\n"
+            f"{summary.headline}\n\n"
+            f"{summary.guidance}"
+        )
+        if summary.tone == "warning":
+            st.warning(body, icon="⚠️")
+        elif summary.tone == "info":
+            st.info(body, icon="ℹ️")
+        else:
+            st.success(body, icon="✅")
 
-    lines = [
-        _bar("문항", report.extracted_questions, report.detected_questions),
-        _bar("보기", report.options_matched, report.tables_with_options),
-        _bar("스킵 로직", report.skip_extracted, report.skip_patterns_found),
-        _bar("필터", report.filter_extracted, report.filter_patterns_found),
-        _bar("지시문", report.instruction_extracted, report.instruction_patterns_found),
-    ]
+        st.markdown("**점검 요약**")
+        for start in range(0, len(summary.metrics), 2):
+            metric_cols = st.columns(2)
+            for col, metric in zip(metric_cols, summary.metrics[start:start + 2]):
+                with col:
+                    with st.container(border=True):
+                        status_icon = {
+                            "ok": "✅",
+                            "info": "ℹ️",
+                            "warning": "⚠️",
+                        }.get(metric.tone, "ℹ️")
+                        st.markdown(f"{status_icon} **{metric.label}**")
+                        st.markdown(f"{metric.value} · **{metric.status}**")
+                        if metric.detail:
+                            st.caption(metric.detail)
 
-    if report.has_issues:
-        with st.expander(f"📊 추출 커버리지 — {len(report.items)}건 확인 필요", expanded=True):
-            st.markdown("  \n".join(lines))
-            st.markdown("---")
-            st.markdown("**확인이 필요한 항목:**")
-            for item in report.items:
-                icon = "⚠️" if item.severity == "warning" else "ℹ️"
-                st.markdown(f"- {icon} {item.description}")
+        if summary.key_items:
+            st.markdown("**먼저 확인할 항목**")
+            st.caption(
+                "아래 항목은 결과 품질에 영향을 줄 수 있습니다. "
+                "결과 테이블에서 정상 반영 여부를 먼저 확인해주세요."
+            )
+            _render_user_coverage_items(summary.key_items[:8])
+            if len(summary.key_items) > 8:
+                with st.expander(f"나머지 중요 확인 항목 {len(summary.key_items) - 8}개", expanded=False):
+                    _render_user_coverage_items(summary.key_items[8:])
+
+        if summary.reference_items:
+            with st.expander(
+                f"참고 항목 {len(summary.reference_items)}개 "
+                "(보기 코드나 안내 표일 가능성이 높은 항목)",
+                expanded=False,
+            ):
+                st.caption(
+                    "아래 항목은 자동 점검에서 문항 후보로 감지되었지만, "
+                    "실제로는 보기 코드, 나이, TV 사이즈, 가격값 또는 안내 표일 가능성이 높습니다. "
+                    "결과에 이상이 없어 보이면 별도로 수정하지 않아도 됩니다."
+                )
+                _render_user_coverage_items(summary.reference_items[:30])
+                if len(summary.reference_items) > 30:
+                    st.caption(f"그 외 참고 항목 {len(summary.reference_items) - 30}개는 생략했습니다.")
+
+
+def _render_user_coverage_items(items):
+    """Render compact action items for extraction review."""
+    for idx, item in enumerate(items, start=1):
+        st.markdown(f"{idx}. **{item.title}** — {item.message}")
+        if item.evidence:
+            st.caption(f"근거: {item.evidence}")
+
+
+def _render_preflight_report(report):
+    """Render DOCX format readiness before the costly LLM extraction."""
+    label = report.readiness_label
+    if report.score >= 85:
+        icon = "✅"
+    elif report.score >= 70:
+        icon = "ℹ️"
     else:
-        with st.expander("📊 추출 커버리지 — 누락 없음", expanded=False):
-            st.markdown("  \n".join(lines))
+        icon = "⚠️"
+
+    with st.expander(
+        f"{icon} DOCX Preflight — {report.score}/100 ({label})",
+        expanded=report.score < 85,
+    ):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Question candidates", report.question_candidates)
+        c2.metric("Typed", f"{report.typed_question_candidates}/{report.question_candidates}")
+        c3.metric("Option tables", report.option_tables)
+        c4.metric("Generic/Unknown", f"{report.generic_tables}/{report.unknown_tables}")
+
+        st.caption(
+            f"Sections {report.sections} · Paragraphs {report.paragraphs} · "
+            f"Tables {report.tables} · Grid/Matrix {report.grid_tables} · "
+            f"Merged tables {report.merged_tables} · Textboxes {report.textbox_paragraphs}"
+        )
+
+        if report.issues:
+            st.markdown("**수정/검수 권장 항목**")
+            for issue in report.issues:
+                mark = "⚠️" if issue.severity in ("high", "medium") else "ℹ️"
+                st.markdown(f"- {mark} {issue.message}")
+                if issue.evidence:
+                    st.caption(issue.evidence)
+        else:
+            st.markdown("서식상 큰 리스크가 감지되지 않았습니다.")
 
 
 def _render_intelligence_summary(doc: SurveyDocument):
@@ -351,6 +506,8 @@ def _render_intelligence_summary(doc: SurveyDocument):
 def _display_docx_results(survey_doc: SurveyDocument):
     """추출 결과를 스프레드시트(기본) + 트리뷰(접힘)로 표시"""
     edited_df = render_spreadsheet_view(survey_doc)
+    survey_doc = apply_spreadsheet_edits_to_document(survey_doc, edited_df)
+    st.session_state['survey_document'] = survey_doc
     st.session_state['edited_df'] = edited_df
 
     if st.checkbox("Show Tree View (detailed question cards)", value=False,

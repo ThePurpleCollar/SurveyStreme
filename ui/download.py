@@ -1,23 +1,30 @@
 import io
+import json
 import pandas as pd
 import streamlit as st
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from models.survey import SurveyDocument
+
+
+EXCEL_EXPORT_CACHE_VERSION = "questionnaire-excel-v1"
 
 
 def df_for_download(processed_df):
     """다운로드용 DataFrame 준비 (컬럼 순서 정리 및 빈 컬럼 추가)"""
     processed_df = processed_df.copy()
     for col in ['Sort', 'TableTitle', 'SubBanner', 'NetRecode',
-                 'BannerIDs', 'SpecialInstructions', 'GrammarChecker', 'Other']:
+                 'BannerIDs', 'SpecialInstructions', 'GrammarChecker', 'Other',
+                 'ReviewStatus', 'ReviewNotes']:
         if col not in processed_df.columns:
             processed_df[col] = ''
 
     # 컬럼 순서: Sort, QN, TN, QText, Title, SubBanner, QType, SType, NetRecode, BannerIDs, SpecialInstructions, Other, GrammarChecker
-    base_columns = ['Sort', 'QuestionNumber', 'TableNumber', 'QuestionText',
+    base_columns = ['ReviewStatus', 'Sort', 'QuestionNumber', 'TableNumber', 'QuestionText',
                     'TableTitle', 'SubBanner', 'QuestionType', 'SummaryType',
-                    'NetRecode', 'BannerIDs', 'SpecialInstructions', 'Other', 'GrammarChecker']
+                    'NetRecode', 'BannerIDs', 'SpecialInstructions', 'Other',
+                    'GrammarChecker', 'ReviewNotes']
 
     # DOCX 추출에서 추가되는 컬럼들
     extra_columns = ['AnswerOptions', 'SkipLogic', 'Filter', 'Instructions']
@@ -47,7 +54,7 @@ def prepare_excel_download(survey_doc) -> bytes:
         "TableTitle", "SubBanner", "QuestionType", "SummaryType",
         "NetRecode", "BannerIDs", "SpecialInstructions",
         "AnswerOptions", "SkipLogic", "Filter",
-        "Instructions", "GrammarChecker",
+        "Instructions", "GrammarChecker", "ReviewStatus", "ReviewNotes",
     ]
     ws_main.append(headers)
 
@@ -74,13 +81,15 @@ def prepare_excel_download(survey_doc) -> bytes:
             q.filter_condition or "",
             q.instructions or "",
             q.grammar_checked,
+            getattr(q, "review_status", "needs_review"),
+            getattr(q, "review_notes", ""),
         ])
 
     for row in ws_main.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(wrap_text=True, vertical='top')
 
-    col_widths = [12, 15, 12, 50, 35, 20, 12, 25, 30, 12, 35, 40, 30, 25, 20, 25]
+    col_widths = [12, 15, 12, 50, 35, 20, 12, 25, 30, 12, 35, 40, 30, 25, 20, 25, 15, 30]
     for i, width in enumerate(col_widths, 1):
         ws_main.column_dimensions[get_column_letter(i)].width = width
 
@@ -216,6 +225,22 @@ def prepare_excel_download(survey_doc) -> bytes:
     return buffer.getvalue()
 
 
+@st.cache_data(show_spinner=False)
+def _prepare_excel_download_from_json(doc_json: str, cache_version: str) -> bytes:
+    doc = SurveyDocument.from_json_dict(json.loads(doc_json))
+    return prepare_excel_download(doc)
+
+
+def prepare_excel_download_cached(survey_doc) -> bytes:
+    """Prepare questionnaire Excel bytes with a document-content cache key."""
+    doc_json = json.dumps(
+        survey_doc.to_json_dict(),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return _prepare_excel_download_from_json(doc_json, EXCEL_EXPORT_CACHE_VERSION)
+
+
 def render_download_buttons(page_name: str, include_excel: bool = False):
     """CSV (+ 선택적 Excel) 다운로드 버튼 렌더링."""
     if 'edited_df' not in st.session_state:
@@ -236,7 +261,7 @@ def render_download_buttons(page_name: str, include_excel: bool = False):
                 mime='text/csv',
             )
         with col2:
-            excel_data = prepare_excel_download(st.session_state['survey_document'])
+            excel_data = prepare_excel_download_cached(st.session_state['survey_document'])
             excel_filename = f"{base_name}_{page_name}.xlsx"
             st.download_button(
                 label="Excel 다운로드",

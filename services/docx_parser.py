@@ -299,6 +299,117 @@ _QN_IN_CELL_RE = _re.compile(
     r'^[A-Za-z]+\d+[a-z]?[.)\s]',
 )
 
+_TYPE_HINT_RE = _re.compile(
+    r'^\s*\[(?:SA|S|MA|M|OE|OPEN|NUMERIC|SCALE|RANK|TOP\s*\d+)[^\]]*\]\s*$',
+    _re.IGNORECASE,
+)
+
+_CODE_CELL_RE = _re.compile(
+    r'^\s*(?:-?\d+[.)]?|[A-Za-z]|[A-Za-z]\d{1,2})\s*$'
+)
+
+_ROUTING_CELL_RE = _re.compile(
+    r'(?:terminate|screen\s*out|go\s*to|skip\s*to|quota|종료|탈락|이동|건너뜀)',
+    _re.IGNORECASE,
+)
+
+_CODING_REF_STRONG_HEADERS = frozenset({
+    'variable', 'var', 'name', 'description', 'quota', 'criteria',
+    '변수', '이름', '설명', '항목', '쿼터', '조건',
+})
+
+
+def _clean_table_rows(rows: List[List[str]]) -> List[List[str]]:
+    """Trim cells and drop fully empty rows for table classification."""
+    cleaned = []
+    for row in rows:
+        cells = [str(c).strip() for c in row]
+        if any(cells):
+            cleaned.append(cells)
+    return cleaned
+
+
+def _is_code_cell(text: str) -> bool:
+    """Return True for compact option/code cells such as 1, 99, A, B2."""
+    if not text:
+        return False
+    value = text.strip()
+    if _TYPE_HINT_RE.match(value):
+        return False
+    return bool(_CODE_CELL_RE.match(value))
+
+
+def _looks_like_option_label(text: str) -> bool:
+    """Return True for the label side of a response option row."""
+    if not text:
+        return False
+    value = text.strip()
+    if _TYPE_HINT_RE.match(value):
+        return False
+    if _is_code_cell(value):
+        return False
+    if _ROUTING_CELL_RE.fullmatch(value):
+        return False
+    return True
+
+
+def _is_option_header(row: List[str]) -> bool:
+    """Detect non-data header rows in option tables."""
+    cells = [c.strip().lower() for c in row if c.strip()]
+    if not cells:
+        return True
+    if all(_TYPE_HINT_RE.match(c) for c in row if c.strip()):
+        return True
+    header_terms = {'code', 'label', 'value', 'option', 'answer',
+                    '코드', '레이블', '값', '보기', '응답'}
+    return bool(cells) and all(c in header_terms for c in cells)
+
+
+def _looks_like_code_label_table(rows: List[List[str]], col_count: int) -> bool:
+    """Detect answer option tables in both code|label and label|code layouts.
+
+    Many Ipsos questionnaires use label|code or label|code|routing columns,
+    not only the classic code|label layout. This classifier intentionally
+    accepts either orientation but rejects wide scale rows with many numeric
+    scale columns.
+    """
+    if col_count < 2 or col_count > 4:
+        return False
+
+    data_rows = _clean_table_rows(rows)
+    if data_rows and _is_option_header(data_rows[0]):
+        data_rows = data_rows[1:]
+    if not data_rows:
+        return False
+
+    matched = 0
+    considered = 0
+    for row in data_rows:
+        nonempty = [(idx, cell.strip()) for idx, cell in enumerate(row) if cell.strip()]
+        if len(nonempty) < 2:
+            continue
+
+        code_positions = [idx for idx, cell in nonempty if _is_code_cell(cell)]
+        # Wide numeric rows are usually scales, not answer-option rows.
+        if len(code_positions) > 2:
+            continue
+
+        considered += 1
+        row_matched = False
+        for code_idx in code_positions:
+            before = [cell for idx, cell in nonempty if idx < code_idx]
+            after = [cell for idx, cell in nonempty if idx > code_idx]
+            label_candidates = before + after
+            if any(_looks_like_option_label(cell) for cell in label_candidates):
+                row_matched = True
+                break
+        if row_matched:
+            matched += 1
+
+    if considered == 0:
+        return False
+    return matched >= 2 and matched / considered >= 0.6
+
 
 def _classify_table(rows: List[List[str]]) -> str:
     """표의 내용을 분석하여 타입을 분류한다.
@@ -330,13 +441,6 @@ def _classify_table(rows: List[List[str]]) -> str:
             return "generic"
         return "section_header"
 
-    # ── coding_reference: 헤더에 Variable/Code/Label 키워드 포함 (3열 이상, 60%) ──
-    if rows and col_count >= 2:
-        header_cells = [c.strip().lower() for c in rows[0] if c.strip()]
-        header_matches = sum(1 for c in header_cells if c in _CODING_REF_HEADERS)
-        if header_cells and header_matches / len(header_cells) >= 0.6:
-            return "coding_reference"
-
     # ── multi_question: 첫 번째 열에 여러 문항 번호 패턴 ──
     if col_count >= 2:
         first_col_values = [rows[i][0].strip() for i in range(row_count)
@@ -345,26 +449,24 @@ def _classify_table(rows: List[List[str]]) -> str:
         if first_col_values and qn_count / len(first_col_values) >= 0.5 and qn_count >= 2:
             return "multi_question"
 
+    # ── coding_reference: 변수/코드북/쿼터 등 명확한 메타데이터 표 ──
+    if rows and col_count >= 2:
+        header_cells = [c.strip().lower() for c in rows[0] if c.strip()]
+        strong_matches = sum(1 for c in header_cells if c in _CODING_REF_STRONG_HEADERS)
+        if header_cells and strong_matches > 0:
+            return "coding_reference"
+
     # ── code_label: 보기 표 (코드+라벨 구조) ──
-    # 2~4열, 첫 열이 짧은 코드(숫자 또는 1~3자 문자), 나머지가 라벨
-    if 2 <= col_count <= 4 and row_count >= 2:
-        data_rows = rows[1:] if len(rows) > 1 else rows
-        code_count = 0
-        for r in data_rows:
-            cell = r[0].strip() if r else ""
-            if not cell:
-                continue
-            # 숫자 코드: 1, 2, 99, -1
-            if cell.lstrip('-').isdigit():
-                code_count += 1
-            # 짧은 문자 코드: a, b, A, B, A1
-            elif len(cell) <= 3 and cell[0].isalpha():
-                code_count += 1
-            # "1." "2)" 형태
-            elif _re.match(r'^\d+[.)]$', cell):
-                code_count += 1
-        if data_rows and code_count / len(data_rows) >= 0.5:
-            return "code_label"
+    # 2~4열, code|label / label|code / label|code|routing 모두 허용
+    if row_count >= 2 and _looks_like_code_label_table(rows, col_count):
+        return "code_label"
+
+    # ── coding_reference: 3열 이상에서 Code/Label/Value류 헤더가 지배적인 메타데이터 표 ──
+    if rows and col_count >= 2:
+        header_cells = [c.strip().lower() for c in rows[0] if c.strip()]
+        header_matches = sum(1 for c in header_cells if c in _CODING_REF_HEADERS)
+        if header_cells and col_count >= 3 and header_matches / len(header_cells) >= 0.6:
+            return "coding_reference"
 
     # ── code_label 폴백: 1행 가로 배치 보기 (| 1.남성 | 2.여성 | 3.기타 |) ──
     if row_count == 1 and col_count >= 3:

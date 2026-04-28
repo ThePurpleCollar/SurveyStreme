@@ -4,7 +4,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.survey import SurveyQuestion, SurveyDocument, SkipLogic, AnswerOption
-from pages.intelligence_dashboard import (
+from legacy_pages.intelligence_dashboard import (
     _estimate_loi_quick,
     _skip_complexity,
     _normalize_type,

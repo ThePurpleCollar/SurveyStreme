@@ -20,9 +20,14 @@ def render_tree_view(survey_doc: SurveyDocument):
         # 문항 헤더: 번호 | 질문 텍스트 축약 | [유형]
         type_badge = f" `{q.question_type}`" if q.question_type else ""
         question_preview = q.question_text[:80] + ("..." if len(q.question_text) > 80 else "")
+        review_badge = {
+            "verified": " `[verified]`",
+            "rejected": " `[rejected]`",
+            "needs_review": " `[needs review]`",
+        }.get(getattr(q, "review_status", "needs_review"), " `[needs review]`")
 
         with st.expander(
-            f"**{q.question_number}** | {question_preview}{type_badge}",
+            f"**{q.question_number}** | {question_preview}{type_badge}{review_badge}",
             expanded=False
         ):
             # 전체 질문 텍스트
@@ -37,6 +42,9 @@ def render_tree_view(survey_doc: SurveyDocument):
             with meta_cols[1]:
                 if q.instructions:
                     st.markdown(f"**지시문:** _{q.instructions}_")
+            st.markdown(f"**검수 상태:** `{getattr(q, 'review_status', 'needs_review')}`")
+            if getattr(q, "review_notes", ""):
+                st.markdown(f"**검수 메모:** {q.review_notes}")
 
             # 필터
             if q.filter_condition:

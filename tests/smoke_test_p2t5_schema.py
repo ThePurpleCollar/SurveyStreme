@@ -12,6 +12,8 @@ print("Test 1: ProgrammingGuide 기본값 OK")
 q = SurveyQuestion(question_number="Q1", question_text="성별")
 assert q.sub_items == []
 assert q.programming_guide is None
+assert q.review_status == "needs_review"
+assert q.review_notes == ""
 print("Test 2: SurveyQuestion 기본값 OK")
 
 # Test 3: sub_items + programming_guide 직렬화
@@ -42,6 +44,7 @@ old = {"question_number": "Q1", "question_text": "성별", "question_type": "SA"
 q_old = SurveyQuestion.from_json_dict(old)
 assert q_old.sub_items == []
 assert q_old.programming_guide is None
+assert q_old.review_status == "needs_review"
 print("Test 5: 구 JSON 하위 호환 OK")
 
 # Test 6: from_llm_dict
@@ -51,10 +54,12 @@ llm_dict = {
     "answer_options": [{"code": "1", "label": "전혀 아님"}],
     "sub_items": ["브랜드 이미지", "제품 품질"],
     "skip_logic": [], "filter": None, "instructions": "ROTATE",
-    "programming_guide": {"rotate_options": True, "dk_na_codes": ["99"]}
+    "programming_guide": {"rotate_options": True, "show_card": True, "dk_na_codes": ["99"]}
 }
 q_llm = SurveyQuestion.from_llm_dict(llm_dict)
 assert q_llm.sub_items == ["브랜드 이미지", "제품 품질"]
+assert q_llm.programming_guide.show_card == True
+assert q_llm.programming_guide.dk_na_codes == ["99"]
 print("Test 6: from_llm_dict OK")
 
 # Test 7: from_llm_dict without programming_guide
@@ -67,10 +72,22 @@ assert q_llm2.programming_guide is None
 assert q_llm2.sub_items == []
 print("Test 7: from_llm_dict without programming_guide OK")
 
-# Test 8: DataFrame SubItems 컬럼
+# Test 8: legacy LLM dk_codes/na_codes 호환
+llm_dict3 = {
+    "question_number": "Q9", "question_text": "척도",
+    "answer_options": [], "skip_logic": [],
+    "programming_guide": {"dk_codes": ["98"], "na_codes": ["99"]},
+}
+q_llm3 = SurveyQuestion.from_llm_dict(llm_dict3)
+assert q_llm3.programming_guide.dk_na_codes == ["98", "99"]
+print("Test 8: legacy dk_codes/na_codes 호환 OK")
+
+# Test 9: DataFrame SubItems 컬럼
 doc = SurveyDocument(filename="test.docx", questions=[q2])
 df = doc.to_dataframe()
 assert "SubItems" in df.columns
-print("Test 8: DataFrame SubItems 컬럼 OK")
+assert "ReviewStatus" in df.columns
+assert "ReviewNotes" in df.columns
+print("Test 9: DataFrame SubItems 컬럼 OK")
 
 print("\nALL P2T5-SCHEMA TESTS PASSED")

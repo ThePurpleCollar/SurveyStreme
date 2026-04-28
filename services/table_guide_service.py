@@ -1977,6 +1977,403 @@ def _banner_id_from_index(i: int) -> str:
     return first + second
 
 
+_DEFAULT_DEMO_CONFIG = {
+    "gender": {
+        "name": {"ko": "성별", "en": "Gender"},
+        "rationale": {
+            "ko": "기본 인구통계 분석 축입니다. 주요 결과를 성별로 비교할 수 있도록 포함합니다.",
+            "en": "Default demographic analysis cut for comparing key results by gender.",
+        },
+    },
+    "age": {
+        "name": {"ko": "연령대", "en": "Age Group"},
+        "rationale": {
+            "ko": "기본 인구통계 분석 축입니다. 주요 결과를 연령대별로 비교할 수 있도록 포함합니다.",
+            "en": "Default demographic analysis cut for comparing key results by age group.",
+        },
+    },
+    "income": {
+        "name": {"ko": "소득수준", "en": "Income Level"},
+        "rationale": {
+            "ko": "기본 인구통계 분석 축입니다. 가격, 구매의향, 태도 결과를 소득수준별로 비교할 수 있도록 포함합니다.",
+            "en": "Default demographic analysis cut for comparing price, intent, and attitude metrics by income level.",
+        },
+    },
+    "region": {
+        "name": {"ko": "지역", "en": "Region"},
+        "rationale": {
+            "ko": "기본 인구통계 분석 축입니다. 주요 결과를 지역별로 비교할 수 있도록 포함합니다.",
+            "en": "Default demographic analysis cut for comparing key results by region.",
+        },
+    },
+}
+
+_DEFAULT_DEMO_ORDER = ("gender", "age", "income", "region")
+
+_DEFAULT_DEMO_TEXT_PATTERNS = {
+    "gender": [
+        re.compile(r"\b(?:gender|sex)\b", re.IGNORECASE),
+        re.compile(r"(?:성별|남녀|남성|여성)"),
+    ],
+    "age": [
+        re.compile(r"\b(?:age|date of birth|birth year|year of birth|years old)\b", re.IGNORECASE),
+        re.compile(r"(?:연령|나이|생년|출생|몇\s*세)"),
+    ],
+    "income": [
+        re.compile(r"\b(?:income|household income|personal income|earnings|salary)\b", re.IGNORECASE),
+        re.compile(r"(?:소득|수입|연소득|월소득|가구소득)"),
+    ],
+    "region": [
+        re.compile(r"\b(?:region|area|state|province|city|residence|residential|location)\b", re.IGNORECASE),
+        re.compile(r"(?:지역|거주지|거주\s*지역|시도|권역|도시)"),
+    ],
+}
+
+_DEFAULT_DEMO_EXCLUDE_OPTION_RE = re.compile(
+    r"\b(?:terminate|screen\s*out|quota\s*fail|auto\s*calculate)\b",
+    re.IGNORECASE,
+)
+
+
+def _text_matches_any(text: str, patterns: list[re.Pattern]) -> bool:
+    return any(pattern.search(text or "") for pattern in patterns)
+
+
+def _clean_banner_label(label: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(label or "")).strip()
+    cleaned = re.sub(
+        r"\s*\|\s*(?:terminate|quota check|screen out|auto[- ]?code).*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    return cleaned
+
+
+def _substantive_options(q: SurveyQuestion) -> list:
+    """Return unique, usable answer options for banner conditions."""
+    options = []
+    seen_codes = set()
+    for opt in q.answer_options:
+        code = str(opt.code or "").strip()
+        label = _clean_banner_label(opt.label)
+        if not code or not label or code in seen_codes:
+            continue
+        if _DEFAULT_DEMO_EXCLUDE_OPTION_RE.search(label):
+            continue
+        seen_codes.add(code)
+        options.append((code, label))
+    return options
+
+
+def _score_default_demographic_question(q: SurveyQuestion, kind: str) -> int:
+    """Score whether a question is a default demographic banner source."""
+    if len(q.answer_options or []) < 2:
+        return 0
+
+    qtype = (q.question_type or "").upper()
+    if "OE" in qtype or "OPEN" in qtype:
+        return 0
+
+    text_blob = " ".join([
+        q.question_number or "",
+        q.question_text or "",
+        q.table_title or "",
+        q.instructions or "",
+        q.section or "",
+    ])
+    option_blob = " ".join(opt.label or "" for opt in q.answer_options)
+    text_lower = text_blob.lower()
+    option_lower = option_blob.lower()
+
+    score = 0
+    if (q.role or "").lower() in ("demographics", "screening"):
+        score += 2
+    if (q.variable_type or "").lower() == "demographic":
+        score += 2
+    if re.match(r"^(?:D|DQ|SC|SQ|S)\d", (q.question_number or "").upper()):
+        score += 1
+
+    if _text_matches_any(text_blob, _DEFAULT_DEMO_TEXT_PATTERNS[kind]):
+        score += 6
+
+    if kind == "gender":
+        has_male = bool(re.search(r"\bmale\b|\bman\b|남성|남자", option_lower))
+        has_female = bool(re.search(r"\bfemale\b|\bwoman\b|여성|여자", option_lower))
+        if has_male and has_female:
+            score += 4
+    elif kind == "age":
+        if re.search(r"\b\d{1,3}\s*(?:-|to)\s*\d{1,3}\b|\b\d{1,3}\+|\byears?\s*old\b", option_lower):
+            score += 3
+    elif kind == "income":
+        # Currency-only questions are often price/WTP questions, so require an income cue in text.
+        if not _text_matches_any(text_blob, _DEFAULT_DEMO_TEXT_PATTERNS[kind]):
+            return 0
+        if re.search(r"[$€£₩¥]|usd|krw|won|dollar|만원|원", option_lower):
+            score += 2
+    elif kind == "region":
+        if not _text_matches_any(text_blob, _DEFAULT_DEMO_TEXT_PATTERNS[kind]):
+            return 0
+
+    # Avoid using pricing/product choice items as income proxies.
+    if kind == "income" and re.search(r"\b(?:price|purchase intent|willing|pay|cost)\b", text_lower):
+        if not re.search(r"\bincome\b|소득|수입", text_lower):
+            return 0
+
+    return score
+
+
+def _detect_default_demographic_questions(
+    questions: List[SurveyQuestion],
+) -> list[tuple[str, SurveyQuestion]]:
+    detected = []
+    used_qns = set()
+
+    for kind in _DEFAULT_DEMO_ORDER:
+        candidates = []
+        for q in questions:
+            qn = q.question_number or ""
+            if qn in used_qns:
+                continue
+            score = _score_default_demographic_question(q, kind)
+            if score <= 0:
+                continue
+            options = _substantive_options(q)
+            if len(options) < 2:
+                continue
+            candidates.append((score, len(options), q))
+
+        if not candidates:
+            continue
+
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        _, _, best_q = candidates[0]
+        used_qns.add(best_q.question_number)
+        detected.append((kind, best_q))
+
+    return detected
+
+
+def _make_banner_point(
+    banner_id: str,
+    index: int,
+    question_number: str,
+    label: str,
+    codes: list[str],
+) -> BannerPoint:
+    return BannerPoint(
+        point_id=f"BP_{banner_id}_{index}",
+        label=label,
+        source_question=question_number,
+        condition=f"{question_number}={','.join(codes)}",
+    )
+
+
+def _split_ordered_options(options: list[tuple[str, str]], group_count: int) -> list[list[tuple[str, str]]]:
+    group_count = max(1, min(group_count, len(options)))
+    base, remainder = divmod(len(options), group_count)
+    groups = []
+    start = 0
+    for i in range(group_count):
+        size = base + (1 if i < remainder else 0)
+        groups.append(options[start:start + size])
+        start += size
+    return [g for g in groups if g]
+
+
+def _parse_age_bounds(label: str) -> tuple[int | None, int | None] | None:
+    label_lower = label.lower()
+    nums = [int(n) for n in re.findall(r"\d{1,3}", label_lower)]
+    if not nums:
+        return None
+    if re.search(r"\b(?:under|younger|less than|or less|and under)\b|이하|미만", label_lower):
+        return None, nums[0]
+    if re.search(r"\+|\b(?:older|or more|and over|plus)\b|이상", label_lower):
+        return nums[0], None
+    if len(nums) >= 2:
+        return nums[0], nums[1]
+    return nums[0], nums[0]
+
+
+def _age_group_label(group: list[tuple[str, str]], language: str) -> str:
+    bounds = [_parse_age_bounds(label) for _, label in group]
+    bounds = [b for b in bounds if b]
+    if not bounds:
+        fallback = ["Younger", "Middle", "Older", "Senior"]
+        return fallback[min(len(group) - 1, len(fallback) - 1)]
+
+    first_low, first_high = bounds[0]
+    last_low, last_high = bounds[-1]
+    if first_low is None:
+        value = f"Up to {first_high}" if language == "en" else f"{first_high}세 이하"
+    elif last_high is None:
+        value = f"{last_low}+" if language == "en" else f"{last_low}세 이상"
+    else:
+        value = f"{first_low}-{last_high}"
+        if language == "ko":
+            value += "세"
+    return value
+
+
+def _build_age_points(q: SurveyQuestion, banner_id: str, language: str) -> list[BannerPoint]:
+    options = _substantive_options(q)
+    if len(options) <= 4:
+        return [
+            _make_banner_point(banner_id, i + 1, q.question_number, label, [code])
+            for i, (code, label) in enumerate(options)
+        ]
+
+    numeric = [(_parse_age_bounds(label), code, label) for code, label in options]
+    if any(bounds for bounds, _, _ in numeric):
+        options = [
+            (code, label)
+            for bounds, code, label in sorted(
+                numeric,
+                key=lambda item: (
+                    item[0][0] if item[0] and item[0][0] is not None
+                    else item[0][1] if item[0] else 999
+                ),
+            )
+        ]
+
+    group_count = 4 if len(options) >= 7 else 3
+    points = []
+    for i, group in enumerate(_split_ordered_options(options, group_count), 1):
+        label = _age_group_label(group, language)
+        codes = [code for code, _ in group]
+        points.append(_make_banner_point(banner_id, i, q.question_number, label, codes))
+    return points
+
+
+def _build_income_points(q: SurveyQuestion, banner_id: str, language: str) -> list[BannerPoint]:
+    options = _substantive_options(q)
+    if len(options) <= 4:
+        return [
+            _make_banner_point(banner_id, i + 1, q.question_number, label, [code])
+            for i, (code, label) in enumerate(options)
+        ]
+
+    labels = (
+        ["Lower Income", "Middle Income", "Higher Income"]
+        if language == "en"
+        else ["저소득", "중간소득", "고소득"]
+    )
+    points = []
+    for i, group in enumerate(_split_ordered_options(options, 3), 1):
+        codes = [code for code, _ in group]
+        points.append(_make_banner_point(banner_id, i, q.question_number, labels[i - 1], codes))
+    return points
+
+
+def _build_exact_demo_points(q: SurveyQuestion, banner_id: str) -> list[BannerPoint]:
+    return [
+        _make_banner_point(banner_id, i + 1, q.question_number, label, [code])
+        for i, (code, label) in enumerate(_substantive_options(q))
+    ]
+
+
+def _build_default_demographic_banners(
+    questions: List[SurveyQuestion],
+    language: str = "ko",
+) -> List[Banner]:
+    """Build deterministic default demographic banners when source questions exist."""
+    banners: List[Banner] = []
+
+    for kind, q in _detect_default_demographic_questions(questions):
+        banner_id = _banner_id_from_index(len(banners))
+        if kind == "age":
+            points = _build_age_points(q, banner_id, language)
+        elif kind == "income":
+            points = _build_income_points(q, banner_id, language)
+        elif kind == "region" and len(_substantive_options(q)) > 8:
+            # Avoid creating very wide, arbitrary region banners without a known grouping.
+            continue
+        else:
+            points = _build_exact_demo_points(q, banner_id)
+
+        if len(points) < 2:
+            continue
+
+        cfg = _DEFAULT_DEMO_CONFIG[kind]
+        lang = "en" if language == "en" else "ko"
+        banners.append(Banner(
+            banner_id=banner_id,
+            name=cfg["name"][lang],
+            category="Demographics",
+            banner_type="simple",
+            rationale=cfg["rationale"][lang],
+            points=points,
+        ))
+
+    return banners
+
+
+def _classify_default_demographic_banner(banner: Banner) -> str:
+    text = f"{banner.category or ''} {banner.name or ''}".lower()
+    for kind, patterns in _DEFAULT_DEMO_TEXT_PATTERNS.items():
+        if _text_matches_any(text, patterns):
+            return kind
+    return ""
+
+
+def _renumber_banners(banners: List[Banner]) -> List[Banner]:
+    for i, banner in enumerate(banners):
+        banner.banner_id = _banner_id_from_index(i)
+        for j, pt in enumerate(banner.points, 1):
+            pt.point_id = f"BP_{banner.banner_id}_{j}"
+    return banners
+
+
+def _merge_default_demographic_banners(
+    default_banners: List[Banner],
+    generated_banners: List[Banner],
+) -> List[Banner]:
+    """Prepend deterministic demographics and remove generated duplicates."""
+    if not default_banners:
+        return _renumber_banners(generated_banners or [])
+
+    default_specs = []
+    for banner in default_banners:
+        qns = _extract_all_banner_qns(banner)
+        default_specs.append({
+            "kind": _classify_default_demographic_banner(banner),
+            "qns": qns,
+        })
+
+    merged = list(default_banners)
+    for banner in generated_banners or []:
+        if banner.banner_type == "composite":
+            merged.append(banner)
+            continue
+
+        kind = _classify_default_demographic_banner(banner)
+        qns = _extract_all_banner_qns(banner)
+        is_duplicate = any(
+            spec["kind"]
+            and kind == spec["kind"]
+            and qns
+            and qns <= spec["qns"]
+            for spec in default_specs
+        )
+        if not is_duplicate:
+            merged.append(banner)
+
+    return _renumber_banners(merged)
+
+
+def _attach_default_demographic_summary(plan: dict | None, banners: List[Banner]) -> None:
+    if plan is None or not banners:
+        return
+    plan["_default_demographic_banners"] = [
+        {
+            "name": b.name,
+            "source_questions": sorted(_extract_all_banner_qns(b)),
+            "values": len(b.points),
+        }
+        for b in banners
+    ]
+
+
 def _assign_categories_from_plan(banner_spec: dict, analysis_plan: dict) -> None:
     """Analysis Plan의 dimension→category 매핑으로 배너에 카테고리 부여.
 
@@ -2470,6 +2867,13 @@ def suggest_banner_points(
     if not questions:
         return [], None
 
+    default_banners = _build_default_demographic_banners(questions, language)
+    if default_banners:
+        logger.info(
+            "Default demographic banners seeded: %s",
+            ", ".join(f"{b.name}({next(iter(_extract_all_banner_qns(b)), '')})" for b in default_banners),
+        )
+
     def _cb(event: str, data: dict):
         if progress_callback:
             progress_callback(event, data)
@@ -2564,7 +2968,8 @@ def suggest_banner_points(
 
         if not banner_spec or not banner_spec.get("banners"):
             logger.warning("Step 2 failed — returning empty banners")
-            return [], analysis_plan
+            _attach_default_demographic_summary(analysis_plan, default_banners)
+            return _merge_default_demographic_banners(default_banners, []), analysis_plan
 
         banner_quality = _assess_banner_quality(banner_spec)
         if banner_quality["pass"]:
@@ -2609,6 +3014,9 @@ def suggest_banner_points(
         banners = _parse_banner_spec_to_models(banner_spec)
     _cb("phase", {"name": "validation", "status": "done"})
 
+    banners = _merge_default_demographic_banners(default_banners, banners)
+    _attach_default_demographic_summary(analysis_plan, default_banners)
+
     # ── Final quality log ──
     composite_final = sum(1 for b in banners if b.banner_type == "composite")
     cat_final = len(set(b.category for b in banners if b.category))
@@ -2632,6 +3040,8 @@ def _suggest_banner_points_legacy(
 
     Expert consensus 실패 시 사용되는 기존 3-step CoT 파이프라인.
     """
+    default_banners = _build_default_demographic_banners(questions, language)
+
     def _cb(event: str, data: dict):
         if progress_callback:
             progress_callback(event, data)
@@ -2649,9 +3059,9 @@ def _suggest_banner_points_legacy(
             logger.warning("Step 1 failed or empty — falling back to heuristic")
             candidates = _fallback_heuristic_candidates(questions, intelligence)
             if not candidates:
-                return [], None
+                return _merge_default_demographic_banners(default_banners, []), None
             banners = _fallback_direct_banner(candidates, survey_context, language)
-            return banners, None
+            return _merge_default_demographic_banners(default_banners, banners), None
 
         plan_quality = _assess_plan_quality(analysis_plan)
         if plan_quality["pass"]:
@@ -2669,7 +3079,8 @@ def _suggest_banner_points_legacy(
         banner_spec = _design_banners_from_plan(analysis_plan, questions, language, survey_context)
 
         if not banner_spec or not banner_spec.get("banners"):
-            return [], analysis_plan
+            _attach_default_demographic_summary(analysis_plan, default_banners)
+            return _merge_default_demographic_banners(default_banners, []), analysis_plan
 
         banner_quality = _assess_banner_quality(banner_spec)
         if banner_quality["pass"]:
@@ -2701,6 +3112,9 @@ def _suggest_banner_points_legacy(
     if not banners:
         banners = _parse_banner_spec_to_models(banner_spec)
     _cb("phase", {"name": "validation", "status": "done"})
+
+    banners = _merge_default_demographic_banners(default_banners, banners)
+    _attach_default_demographic_summary(analysis_plan, default_banners)
 
     composite_final = sum(1 for b in banners if b.banner_type == "composite")
     cat_final = len(set(b.category for b in banners if b.category))
@@ -3245,6 +3659,383 @@ def compile_table_guide(doc: SurveyDocument, project_name: str = "",
         rows=rows,
         language=language,
     )
+
+
+_NEGATIVE_CONDITION_RE = re.compile(r"(!=|<>|≠|\bNOT\b)", re.IGNORECASE)
+
+
+def _unique_questions(survey_doc: SurveyDocument) -> List[SurveyQuestion]:
+    seen = set()
+    questions = []
+    for q in survey_doc.questions:
+        if q.question_number in seen:
+            continue
+        seen.add(q.question_number)
+        questions.append(q)
+    return questions
+
+
+def _build_question_lookup(survey_doc: SurveyDocument) -> tuple[dict, dict]:
+    by_qn = {}
+    by_row_key = {}
+    for q in survey_doc.questions:
+        by_qn.setdefault(q.question_number, q)
+        by_row_key.setdefault(f"{q.question_number}_{q.table_number}", q)
+    return by_qn, by_row_key
+
+
+def _build_code_label_map(survey_doc: SurveyDocument) -> dict[str, dict[str, str]]:
+    code_map = {}
+    for q in _unique_questions(survey_doc):
+        code_map[q.question_number] = {
+            str(opt.code).strip(): str(opt.label).strip()
+            for opt in q.answer_options
+            if str(opt.code).strip()
+        }
+    return code_map
+
+
+def _split_banner_ids_value(value: str) -> list[str]:
+    if not value or not str(value).strip():
+        return []
+    return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
+def _parse_condition_parts(condition: str) -> tuple[list[tuple[str, list[str]]], list[str]]:
+    """Parse Q1=1,2&Q2=3 style conditions into question/code parts."""
+    condition = str(condition or "").strip()
+    if not condition:
+        return [], ["Missing banner condition"]
+
+    warnings = []
+    if _NEGATIVE_CONDITION_RE.search(condition):
+        warnings.append("Negative condition is not SPSS-ready; convert to positive code list")
+
+    parsed = []
+    for raw_part in condition.split("&"):
+        part = raw_part.strip().strip("()")
+        if not part:
+            continue
+        if "=" not in part:
+            warnings.append(f"Invalid condition part: {part}")
+            continue
+        qn, raw_codes = part.split("=", 1)
+        qn = qn.strip()
+        codes = [
+            code.strip().strip("'\"")
+            for code in raw_codes.split(",")
+            if code.strip().strip("'\"")
+        ]
+        if not qn or not codes:
+            warnings.append(f"Invalid condition part: {part}")
+            continue
+        parsed.append((qn, codes))
+
+    if not parsed:
+        warnings.append("No executable condition parts found")
+
+    return parsed, warnings
+
+
+def _format_spss_value(code: str) -> str:
+    code = str(code).strip()
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", code):
+        return code
+    escaped = code.replace("'", "''")
+    return f"'{escaped}'"
+
+
+def _condition_to_spss(condition: str) -> str:
+    parts, _ = _parse_condition_parts(condition)
+    clauses = []
+    for qn, codes in parts:
+        if len(codes) == 1:
+            clauses.append(f"{qn} = {_format_spss_value(codes[0])}")
+        else:
+            ors = " OR ".join(f"{qn} = {_format_spss_value(code)}" for code in codes)
+            clauses.append(f"({ors})")
+    return " AND ".join(clauses)
+
+
+def _condition_code_labels(condition: str, code_label_map: dict[str, dict[str, str]]) -> str:
+    parts, _ = _parse_condition_parts(condition)
+    labels = []
+    for qn, codes in parts:
+        q_labels = code_label_map.get(qn, {})
+        for code in codes:
+            label = q_labels.get(code, "")
+            labels.append(f"{qn} {code}={label}" if label else f"{qn} {code}")
+    return " | ".join(labels)
+
+
+def _condition_signature(condition: str) -> dict[str, set[str]]:
+    parts, _ = _parse_condition_parts(condition)
+    signature = {}
+    for qn, codes in parts:
+        signature.setdefault(qn.upper(), set()).update(codes)
+    return signature
+
+
+def _conditions_can_overlap(left: dict[str, set[str]], right: dict[str, set[str]]) -> bool:
+    if not left or not right:
+        return False
+    for qn in set(left) & set(right):
+        if left[qn].isdisjoint(right[qn]):
+            return False
+    return True
+
+
+def _validate_banner_point(
+    pt: BannerPoint,
+    question_lookup: dict,
+    code_label_map: dict[str, dict[str, str]],
+) -> list[str]:
+    warnings = []
+    parts, parse_warnings = _parse_condition_parts(pt.condition)
+    warnings.extend(parse_warnings)
+
+    if pt.source_question:
+        for qn in str(pt.source_question).split("&"):
+            qn = qn.strip()
+            if qn and qn not in question_lookup:
+                warnings.append(f"Source question not found: {qn}")
+
+    for qn, codes in parts:
+        q = question_lookup.get(qn)
+        if not q:
+            warnings.append(f"Condition question not found: {qn}")
+            continue
+        valid_codes = code_label_map.get(qn, {})
+        if not valid_codes:
+            warnings.append(f"No answer options found for validation: {qn}")
+            continue
+        missing = [code for code in codes if code not in valid_codes]
+        if missing:
+            warnings.append(f"Invalid code(s) for {qn}: {', '.join(missing)}")
+
+    return warnings
+
+
+def _validate_banner_spec_for_dp(
+    banners: List[Banner],
+    survey_doc: SurveyDocument,
+) -> dict[tuple[str, str, int], list[str]]:
+    question_lookup, _ = _build_question_lookup(survey_doc)
+    code_label_map = _build_code_label_map(survey_doc)
+    warnings_by_point: dict[tuple[str, str, int], list[str]] = {}
+
+    for banner in banners:
+        signatures = []
+        for idx, pt in enumerate(banner.points, 1):
+            key = (banner.banner_id, pt.point_id, idx)
+            warnings_by_point[key] = _validate_banner_point(pt, question_lookup, code_label_map)
+            signatures.append((idx, pt, _condition_signature(pt.condition)))
+
+        for left_idx, left_pt, left_sig in signatures:
+            for right_idx, right_pt, right_sig in signatures:
+                if right_idx <= left_idx:
+                    continue
+                if _conditions_can_overlap(left_sig, right_sig):
+                    left_key = (banner.banner_id, left_pt.point_id, left_idx)
+                    right_key = (banner.banner_id, right_pt.point_id, right_idx)
+                    warnings_by_point[left_key].append(
+                        f"Potential overlap with value {right_idx}: {right_pt.label}"
+                    )
+                    warnings_by_point[right_key].append(
+                        f"Potential overlap with value {left_idx}: {left_pt.label}"
+                    )
+
+    return warnings_by_point
+
+
+def _validate_table_guide_row_for_dp(
+    row: dict,
+    q: SurveyQuestion | None,
+    banner_ids: list[str],
+    banner_lookup: dict[str, Banner],
+    question_lookup: dict,
+) -> list[str]:
+    warnings = []
+    qn = str(row.get("QuestionNumber", "")).strip()
+    qtype = str(row.get("QuestionType", "") or (q.question_type if q else "")).upper()
+    role = (q.role if q else "").lower()
+
+    if not str(row.get("TableTitle", "")).strip():
+        warnings.append("Missing table title")
+
+    unknown_banners = [bid for bid in banner_ids if bid not in banner_lookup]
+    if unknown_banners:
+        warnings.append(f"Unknown banner ID(s): {', '.join(unknown_banners)}")
+
+    if banner_ids and ("OE" in qtype or "OPEN" in qtype):
+        warnings.append("Open-end question should not have banners assigned")
+
+    if banner_ids and role in ("screening", "demographics"):
+        warnings.append("Screening/demographic source question usually should be Total only")
+
+    filter_text = str(row.get("Filter", "") or "")
+    filter_qns = _extract_filter_qns(filter_text)
+    missing_filter_qns = [fq for fq in filter_qns if fq not in question_lookup]
+    if missing_filter_qns:
+        warnings.append(f"Filter references unknown question(s): {', '.join(missing_filter_qns)}")
+
+    if qn and q is None:
+        warnings.append(f"Question not found in source document: {qn}")
+
+    return warnings
+
+
+def _dp_status(warnings: list[str]) -> str:
+    return "Needs Researcher Review" if warnings else "Ready for DP"
+
+
+def _style_dp_sheet(ws, widths: list[int]) -> None:
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=10)
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    wrap_align = Alignment(wrap_text=True, vertical="top")
+
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_align
+
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = wrap_align
+
+    for i, width in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+
+def export_dp_handoff_excel(tg_doc: TableGuideDocument,
+                            survey_doc: SurveyDocument,
+                            intelligence: dict | None = None) -> bytes:
+    """DP팀 전달용 2-sheet Excel 출력.
+
+    Sheets:
+        1. Table Guide — DP가 테이블 구조와 문항별 처리 지시를 확인하는 실행 명세
+        2. Banner Spec — 배너 조건, SPSS-ready 조건, 검증 상태
+    """
+    wb = Workbook()
+    ws_tg = wb.active
+    ws_tg.title = "Table Guide"
+
+    question_lookup, row_lookup = _build_question_lookup(survey_doc)
+    code_label_map = _build_code_label_map(survey_doc)
+    banner_lookup = {b.banner_id: b for b in tg_doc.banners}
+    grammar_lookup = {
+        f"{q.question_number}_{q.table_number}": q.grammar_checked
+        for q in survey_doc.questions
+    }
+
+    tg_headers = [
+        "DP Review Status",
+        "QA Warning",
+        "Sort",
+        "TableNumber",
+        "QuestionNumber",
+        "SourceVariable",
+        "QuestionText",
+        "TableTitle",
+        "QuestionType",
+        "SummaryType",
+        "Base/Filter",
+        "AnswerOptions",
+        "Net/Recode",
+        "SubBanner",
+        "BannerIDs",
+        "BannerNames",
+        "SpecialInstructions",
+        "GrammarChecker",
+    ]
+    ws_tg.append(tg_headers)
+
+    for row in tg_doc.rows:
+        qn = str(row.get("QuestionNumber", "")).strip()
+        row_key = f"{qn}_{row.get('TableNumber', '')}"
+        q = row_lookup.get(row_key) or question_lookup.get(qn)
+        banner_ids = _split_banner_ids_value(row.get("BannerIDs", ""))
+        warnings = _validate_table_guide_row_for_dp(
+            row, q, banner_ids, banner_lookup, question_lookup
+        )
+        filter_text = row.get("Filter", "") or "All respondents"
+        ws_tg.append([
+            _dp_status(warnings),
+            " | ".join(warnings),
+            row.get("Sort", ""),
+            row.get("TableNumber", ""),
+            qn,
+            qn,
+            row.get("QuestionText", ""),
+            row.get("TableTitle", ""),
+            row.get("QuestionType", ""),
+            row.get("SummaryType", ""),
+            filter_text,
+            row.get("AnswerOptions", ""),
+            row.get("NetRecode", ""),
+            row.get("SubBanner", ""),
+            ",".join(banner_ids),
+            expand_banner_ids(",".join(banner_ids), tg_doc.banners),
+            row.get("SpecialInstructions", ""),
+            grammar_lookup.get(row_key, ""),
+        ])
+
+    _style_dp_sheet(ws_tg, [22, 42, 14, 14, 14, 16, 50, 40, 16, 14, 34, 48, 34, 30, 20, 34, 38, 30])
+
+    ws_banner = wb.create_sheet("Banner Spec")
+    banner_headers = [
+        "DP Review Status",
+        "QA Warning",
+        "Category",
+        "BannerID",
+        "BannerName",
+        "BannerType",
+        "BannerValueNo",
+        "BannerValueLabel",
+        "SourceQuestion",
+        "SourceVariable",
+        "HumanCondition",
+        "SPSSCondition",
+        "CodeLabels",
+        "Rationale",
+        "IsNet",
+        "NetDefinition",
+    ]
+    ws_banner.append(banner_headers)
+
+    banner_warnings = _validate_banner_spec_for_dp(tg_doc.banners, survey_doc)
+    for banner in tg_doc.banners:
+        for idx, pt in enumerate(banner.points, 1):
+            key = (banner.banner_id, pt.point_id, idx)
+            warnings = banner_warnings.get(key, [])
+            ws_banner.append([
+                _dp_status(warnings),
+                " | ".join(warnings),
+                banner.category or "",
+                banner.banner_id,
+                banner.name,
+                banner.banner_type or "simple",
+                idx,
+                pt.label,
+                pt.source_question,
+                pt.source_question,
+                pt.condition,
+                _condition_to_spss(pt.condition),
+                _condition_code_labels(pt.condition, code_label_map),
+                banner.rationale or "",
+                "Yes" if pt.is_net else "No",
+                pt.net_definition,
+            ])
+
+    _style_dp_sheet(ws_banner, [22, 44, 22, 12, 28, 14, 14, 28, 20, 20, 32, 48, 46, 50, 10, 28])
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
 
 
 def export_table_guide_excel(tg_doc: TableGuideDocument,

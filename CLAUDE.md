@@ -24,6 +24,7 @@ pages/
   doc_analyzer.py         # Questionnaire Analyzer UI
   table_guide.py          # Table Guide Builder UI (Title + Banner + Export)
   survey_qa.py            # Logic Checker UI (시각화 + 분기 + 체크리스트)
+legacy_pages/             # 라우팅 제외된 참고/실험 페이지
 services/
   llm_client.py           # LLM 게이트웨이 (Gemini/GPT, 재시도, Safety Filter 해제)
   llm_extractor.py        # LLM 문항 추출 파이프라인 (Concept-based Prompting)
@@ -44,6 +45,11 @@ ui/
   tree_view.py            # 문항 트리뷰
   spreadsheet.py          # 편집 테이블
   download.py             # CSV/Excel 다운로드 (Banner Layout 포함)
+ground_truth/             # 사람이 검수한 추출 정답셋
+scripts/
+  evaluate_extraction.py  # Ground Truth vs 추출 세션 품질 평가
+  promote_ground_truth.py # 세션 JSON → Ground Truth 후보 생성
+  run_smoke_tests.py      # pytest 없이 smoke_test_*.py 실행
 ```
 
 ## Coding Conventions

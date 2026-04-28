@@ -7,20 +7,22 @@ Phase 4: Review & Export
 """
 
 import logging
+import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import streamlit as st
 
-from models.survey import Banner, BannerPoint
+from models.survey import Banner, BannerPoint, SurveyDocument, TableGuideDocument
 from services.llm_client import call_llm_json, MODEL_TITLE_GENERATOR
-from services.survey_context import build_survey_context
+from services.survey_context import build_survey_context, enrich_document
 from services.table_guide_service import (
     _banner_id_from_index,
     analyze_survey_intelligence,
     assign_banners_to_questions,
-    compile_table_guide, expand_banner_ids, export_table_guide_excel,
+    compile_table_guide, expand_banner_ids, export_dp_handoff_excel,
+    export_table_guide_excel,
     generate_net_recodes,
     generate_sort_orders, generate_special_instructions,
     suggest_banner_points, suggest_sub_banners,
@@ -28,6 +30,84 @@ from services.table_guide_service import (
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 20
+TABLE_GUIDE_EXPORT_CACHE_VERSION = "table-guide-excel-v1"
+DP_HANDOFF_EXPORT_CACHE_VERSION = "dp-handoff-excel-v1"
+
+
+def _json_dumps_stable(data) -> str:
+    return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+
+def _table_guide_to_json(tg_doc: TableGuideDocument) -> str:
+    data = {
+        "project_name": tg_doc.project_name,
+        "filename": tg_doc.filename,
+        "generated_at": tg_doc.generated_at,
+        "banners": [b.to_json_dict() for b in tg_doc.banners],
+        "rows": tg_doc.rows,
+        "language": tg_doc.language,
+    }
+    return _json_dumps_stable(data)
+
+
+@st.cache_data(show_spinner=False)
+def _export_table_guide_excel_from_json(
+    tg_doc_json: str,
+    survey_doc_json: str,
+    intelligence_json: str,
+    cache_version: str,
+) -> bytes:
+    tg_data = json.loads(tg_doc_json)
+    tg_doc = TableGuideDocument(
+        project_name=tg_data.get("project_name", ""),
+        filename=tg_data.get("filename", ""),
+        generated_at=tg_data.get("generated_at", ""),
+        banners=[Banner.from_json_dict(b) for b in tg_data.get("banners", [])],
+        rows=tg_data.get("rows", []),
+        language=tg_data.get("language", "ko"),
+    )
+    survey_doc = SurveyDocument.from_json_dict(json.loads(survey_doc_json))
+    intelligence = json.loads(intelligence_json) if intelligence_json else None
+    return export_table_guide_excel(tg_doc, survey_doc, intelligence=intelligence)
+
+
+def _export_table_guide_excel_cached(tg_doc, survey_doc, intelligence=None) -> bytes:
+    return _export_table_guide_excel_from_json(
+        _table_guide_to_json(tg_doc),
+        _json_dumps_stable(survey_doc.to_json_dict()),
+        _json_dumps_stable(intelligence or {}),
+        TABLE_GUIDE_EXPORT_CACHE_VERSION,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _export_dp_handoff_excel_from_json(
+    tg_doc_json: str,
+    survey_doc_json: str,
+    intelligence_json: str,
+    cache_version: str,
+) -> bytes:
+    tg_data = json.loads(tg_doc_json)
+    tg_doc = TableGuideDocument(
+        project_name=tg_data.get("project_name", ""),
+        filename=tg_data.get("filename", ""),
+        generated_at=tg_data.get("generated_at", ""),
+        banners=[Banner.from_json_dict(b) for b in tg_data.get("banners", [])],
+        rows=tg_data.get("rows", []),
+        language=tg_data.get("language", "ko"),
+    )
+    survey_doc = SurveyDocument.from_json_dict(json.loads(survey_doc_json))
+    intelligence = json.loads(intelligence_json) if intelligence_json else None
+    return export_dp_handoff_excel(tg_doc, survey_doc, intelligence=intelligence)
+
+
+def _export_dp_handoff_excel_cached(tg_doc, survey_doc, intelligence=None) -> bytes:
+    return _export_dp_handoff_excel_from_json(
+        _table_guide_to_json(tg_doc),
+        _json_dumps_stable(survey_doc.to_json_dict()),
+        _json_dumps_stable(intelligence or {}),
+        DP_HANDOFF_EXPORT_CACHE_VERSION,
+    )
 
 
 def _get_survey_context(df=None) -> str:
@@ -363,6 +443,184 @@ def _sync_field_to_df_and_doc(field_map: dict, df_col: str, doc_attr: str):
         for q in st.session_state["survey_document"].questions:
             if q.question_number in field_map:
                 setattr(q, doc_attr, field_map[q.question_number])
+
+
+def _apply_banner_generation_result(questions: list, doc, suggested: list, plan: dict | None) -> dict:
+    """Persist generated banners and assign them to questions."""
+    suggested_count = len(suggested or [])
+    logger.info(
+        "Applying banner generation result: suggested=%s, has_doc=%s, has_plan=%s",
+        suggested_count,
+        bool(doc),
+        bool(plan),
+    )
+
+    if suggested and doc:
+        existing = doc.banners or []
+        existing_pts = sum(len(b.points) for b in existing)
+        new_pts = sum(len(b.points) for b in suggested)
+        if existing_pts > 0 and new_pts < existing_pts and len(suggested) < len(existing):
+            logger.warning(
+                f"Keeping existing banners ({len(existing)} banners, {existing_pts} pts) "
+                f"over new result ({len(suggested)} banners, {new_pts} pts)"
+            )
+        else:
+            doc.banners = suggested
+
+    if plan:
+        st.session_state["banner_analysis_plan"] = plan
+        rp = plan.get("_research_plan")
+        if rp:
+            st.session_state["banner_research_plan"] = rp
+        eo = plan.get("_expert_outputs")
+        if eo:
+            st.session_state["banner_expert_outputs"] = eo
+        st.session_state["banner_consensus_score"] = plan.get("agreement_score", 0)
+
+    if suggested:
+        st.session_state["banners_suggested"] = True
+
+    assigned_count = 0
+    if doc and doc.banners:
+        banner_assign_map = assign_banners_to_questions(questions, doc.banners)
+        _sync_field_to_df_and_doc(banner_assign_map, "BannerIDs", "banner_ids")
+        assigned_count = sum(1 for v in banner_assign_map.values() if str(v).strip())
+
+    stats = {
+        "banners": len(doc.banners) if doc and doc.banners else 0,
+        "assigned": assigned_count,
+    }
+    logger.info(
+        "Banner apply complete: banners=%s, assigned_questions=%s",
+        stats["banners"],
+        stats["assigned"],
+    )
+    return stats
+
+
+def _run_banner_generation_only(df: pd.DataFrame, language: str):
+    """Generate banners from the selected-item workflow."""
+    questions = _get_questions()
+    doc = st.session_state.get("survey_document")
+    logger.info(
+        "Banner generation requested: questions=%s, has_doc=%s, language=%s",
+        len(questions or []),
+        bool(doc),
+        language,
+    )
+    if not questions or not doc:
+        logger.warning("Banner generation skipped: missing questions or survey_document")
+        st.warning("배너 생성을 위해서는 먼저 Questionnaire Analyzer에서 DOCX를 추출해야 합니다.")
+        return False
+
+    phase_labels = {
+        "intelligence": "Survey Intelligence 분석",
+        "research_plan": "Research Plan 작성",
+        "expert_panel": "전문가 패널 분석",
+        "synthesis": "전문가 의견 종합",
+        "banner_design": "배너 설계",
+        "validation": "배너 검증",
+        "assign": "문항별 배너 할당",
+    }
+    phase_progress = {
+        "intelligence": 0.08,
+        "research_plan": 0.18,
+        "expert_panel": 0.38,
+        "synthesis": 0.56,
+        "banner_design": 0.74,
+        "validation": 0.90,
+        "assign": 0.96,
+    }
+
+    with st.status("Banner 생성 중...", expanded=True) as status:
+        progress_bar = st.progress(0.0)
+        phase_line = st.empty()
+        detail_line = st.empty()
+        start_time = time.time()
+
+        def _format_elapsed() -> str:
+            elapsed = int(time.time() - start_time)
+            m, s = divmod(elapsed, 60)
+            return f"{m}:{s:02d}"
+
+        def _banner_progress(event, data):
+            if event == "phase":
+                name = data.get("name", "")
+                label = phase_labels.get(name, name or "처리")
+                state = data.get("status", "")
+                progress = phase_progress.get(name, 0.1)
+                if state == "done":
+                    progress = min(progress + 0.06, 0.98)
+                progress_bar.progress(progress)
+                phase_line.write(f"{label} {state or 'running'}")
+                detail_line.write(f"경과 {_format_elapsed()} | 고품질 배너 생성을 진행 중입니다.")
+            elif event == "expert_done":
+                name = data.get("name", "Expert")
+                status_text = "완료" if data.get("success") else "실패"
+                detail_line.write(f"{name} {status_text} | 경과 {_format_elapsed()}")
+
+        try:
+            intelligence = doc.survey_intelligence if doc else {}
+            if not intelligence:
+                _banner_progress("phase", {"name": "intelligence", "status": "start"})
+                intelligence = analyze_survey_intelligence(
+                    questions,
+                    language,
+                    client_brand=doc.client_brand if doc else "",
+                    study_objective=doc.study_objective if doc else "",
+                )
+                enrich_document(doc, intelligence)
+                _banner_progress("phase", {"name": "intelligence", "status": "done"})
+
+            brief = st.session_state.get("study_brief")
+            survey_ctx = build_survey_context(doc, df=df, confirmed_brief=brief)
+
+            suggested, plan = suggest_banner_points(
+                questions,
+                language,
+                survey_context=survey_ctx,
+                intelligence=intelligence,
+                progress_callback=_banner_progress,
+            )
+            logger.info(
+                "Banner suggestion returned: suggested=%s, has_plan=%s",
+                len(suggested or []),
+                bool(plan),
+            )
+
+            _banner_progress("phase", {"name": "assign", "status": "start"})
+            stats = _apply_banner_generation_result(questions, doc, suggested, plan)
+            _banner_progress("phase", {"name": "assign", "status": "done"})
+
+            progress_bar.progress(1.0)
+            if stats["banners"] > 0:
+                status.update(
+                    label=(
+                        f"Banner 생성 완료 — {stats['banners']}개 배너, "
+                        f"{stats['assigned']}개 문항 할당"
+                    ),
+                    state="complete",
+                )
+                st.success(
+                    f"배너 {stats['banners']}개를 생성했고 "
+                    f"{stats['assigned']}개 문항에 할당했습니다."
+                )
+                st.session_state["banner_generation_notice"] = (
+                    f"배너 {stats['banners']}개 생성, {stats['assigned']}개 문항 할당"
+                )
+                return True
+            else:
+                status.update(label="Banner 생성 결과 없음", state="error")
+                st.warning(
+                    "배너 생성이 완료되었지만 적용 가능한 배너가 없었습니다. "
+                    "Study Brief와 추출 문항을 확인한 뒤 다시 시도해주세요."
+                )
+                return False
+        except Exception as e:
+            status.update(label="Banner 생성 실패", state="error")
+            logger.error(f"Banner generation failed: {e}", exc_info=True)
+            st.error(f"Banner 생성 실패: {e}")
+            return False
 
 
 def _compute_completeness():
@@ -877,8 +1135,23 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
         st.warning("문항 데이터가 없습니다. Questionnaire Analyzer에서 먼저 문서를 처리해주세요.")
         return
 
-    # 배너는 상단 "선택 항목 생성"에서 ☑ Banner (Beta)로 생성
-    # 이 탭은 생성된 배너의 확인/편집 전용
+    action_col, note_col = st.columns([1, 3])
+    with action_col:
+        generate_from_tab = st.button(
+            "배너 생성/재생성",
+            type="primary",
+            key="generate_banners_from_tab",
+            use_container_width=True,
+        )
+    with note_col:
+        st.caption(
+            "현재 문항, Study Brief, Survey Intelligence를 사용해 분석용 배너를 생성하고 "
+            "문항별 BannerIDs까지 다시 할당합니다."
+        )
+
+    if generate_from_tab:
+        if _run_banner_generation_only(df, language):
+            st.rerun()
 
     # ── Analysis Plan & Consensus 표시 ──
     plan = st.session_state.get("banner_analysis_plan")
@@ -1020,7 +1293,7 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
     banners = doc.banners if doc else []
 
     if not banners:
-        st.info("배너가 아직 없습니다. 상단에서 **☑ Banner (Beta)** 를 선택하고 **선택 항목 생성**을 눌러주세요.")
+        st.info("배너가 아직 없습니다. 위의 **배너 생성/재생성** 버튼을 눌러 생성해주세요.")
 
     # ── Banner Summary 테이블 (체크박스 제거 UI) ──
     if banners:
@@ -1313,19 +1586,30 @@ def _tab_review_export(df: pd.DataFrame, language: str):
 
         # Download buttons
         st.subheader("다운로드")
-        dl_col1, dl_col2, dl_col3 = st.columns(3)
+        dl_col1, dl_col2, dl_col3, dl_col4 = st.columns(4)
 
         with dl_col1:
             intel = doc.survey_intelligence if doc else None
-            excel_data = export_table_guide_excel(tg_doc, doc, intelligence=intel)
+            excel_data = _export_table_guide_excel_cached(tg_doc, doc, intelligence=intel)
             st.download_button(
-                label="Table Guide 다운로드 (Excel)",
+                label="내부 검토용 Excel",
                 data=excel_data,
                 file_name=f"{project_name}_table_guide.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
         with dl_col2:
+            intel = doc.survey_intelligence if doc else None
+            dp_excel_data = _export_dp_handoff_excel_cached(tg_doc, doc, intelligence=intel)
+            st.download_button(
+                label="DP Handoff Excel",
+                data=dp_excel_data,
+                file_name=f"{project_name}_dp_handoff.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                help="DP팀 전달용 2-sheet 파일입니다: Table Guide, Banner Spec",
+            )
+
+        with dl_col3:
             csv_cols = [
                 "QuestionNumber", "TableNumber", "QuestionText", "TableTitle",
                 "QuestionType", "SummaryType", "Sort", "NetRecode",
@@ -1340,7 +1624,7 @@ def _tab_review_export(df: pd.DataFrame, language: str):
                 mime="text/csv",
             )
 
-        with dl_col3:
+        with dl_col4:
             session_bytes = doc.to_json_bytes()
             st.download_button(
                 label="세션 다운로드 (JSON)",
@@ -1360,6 +1644,13 @@ def _run_generate_all(df: pd.DataFrame, language: str):
     questions = _get_questions()
     has_questions = bool(questions)
     doc = st.session_state.get("survey_document")
+    logger.info(
+        "Generate All requested: rows=%s, questions=%s, has_doc=%s, language=%s",
+        len(df),
+        len(questions or []),
+        bool(doc),
+        language,
+    )
 
     total_tasks = 3 if has_questions else 1
 
@@ -1412,9 +1703,15 @@ def _run_generate_all(df: pd.DataFrame, language: str):
 
         def _worker_banner():
             t0 = time.time()
+            logger.info("Generate All banner worker started")
             suggested, plan = suggest_banner_points(questions, language,
                                                     survey_context=survey_ctx,
                                                     intelligence=intelligence)
+            logger.info(
+                "Generate All banner worker finished: suggested=%s, has_plan=%s",
+                len(suggested or []),
+                bool(plan),
+            )
             return ("banner", (suggested, plan), time.time() - t0)
 
         # ── Step 3: 병렬 실행 ──
@@ -1474,36 +1771,9 @@ def _run_generate_all(df: pd.DataFrame, language: str):
         if "banner" in results:
             _, banner_result, _ = results["banner"]
             suggested, plan = banner_result
-            if suggested and doc:
-                # 기존 배너가 더 풍부하면 fallback 결과로 덮어쓰지 않음
-                existing = doc.banners or []
-                existing_pts = sum(len(b.points) for b in existing)
-                new_pts = sum(len(b.points) for b in suggested)
-                if existing_pts > 0 and new_pts < existing_pts and len(suggested) < len(existing):
-                    logger.warning(
-                        f"Keeping existing banners ({len(existing)} banners, {existing_pts} pts) "
-                        f"over new result ({len(suggested)} banners, {new_pts} pts)"
-                    )
-                else:
-                    doc.banners = suggested
-            if plan:
-                st.session_state["banner_analysis_plan"] = plan
-                rp = plan.get("_research_plan")
-                if rp:
-                    st.session_state["banner_research_plan"] = rp
-                eo = plan.get("_expert_outputs")
-                if eo:
-                    st.session_state["banner_expert_outputs"] = eo
-                st.session_state["banner_consensus_score"] = plan.get("agreement_score", 0)
-            if suggested:
-                st.session_state["banners_suggested"] = True
-
-        # ── 배너 할당 (배너 생성 후 순차) ──
-        if "banner" in results and doc and doc.banners:
-            log_area.text("Assigning banners to questions...")
             t_assign = time.time()
-            banner_assign_map = assign_banners_to_questions(questions, doc.banners)
-            _sync_field_to_df_and_doc(banner_assign_map, "BannerIDs", "banner_ids")
+            log_area.text("Applying and assigning banners...")
+            _apply_banner_generation_result(questions, doc, suggested, plan)
             worker_times["BannerAssign"] = time.time() - t_assign
 
         # ── Sort Order (알고리즘, 빠름) ──
@@ -1735,6 +2005,10 @@ def page_table_guide_builder():
         )
         st.caption(f"단계별: {timing['details']}")
 
+    banner_notice = st.session_state.pop("banner_generation_notice", None)
+    if banner_notice:
+        st.success(banner_notice)
+
     # ── Survey Intelligence 요약 표시 ──
     intel = doc.survey_intelligence if doc else {}
     if intel and intel.get("study_type"):
@@ -1768,6 +2042,14 @@ def page_table_guide_builder():
     )
 
     if generate_clicked:
+        logger.info(
+            "Selected generation clicked: titles=%s, banners=%s, rows=%s, questions=%s",
+            gen_titles,
+            gen_banners,
+            len(df),
+            len(_get_questions() or []),
+        )
+        rerun_needed = False
         if gen_titles:
             with st.status("Table Title 생성 중...", expanded=True) as title_status:
                 progress_bar = st.progress(0)
@@ -1790,11 +2072,14 @@ def page_table_guide_builder():
                 _apply_results_to_df(results)
                 generated_count = sum(1 for r in results if not r["error"])
                 title_status.update(label=f"Title 생성 완료! {generated_count}개", state="complete")
+                rerun_needed = True
 
         if gen_banners:
-            _tab_banner_setup(df, language)
+            df = st.session_state.get("edited_df", df)
+            rerun_needed = _run_banner_generation_only(df, language) or rerun_needed
 
-        st.rerun()
+        if rerun_needed:
+            st.rerun()
 
     # ── 진행률 요약 ──
     stats = _compute_completeness()

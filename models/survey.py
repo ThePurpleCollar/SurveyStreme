@@ -4,6 +4,15 @@ import json
 import pandas as pd
 
 
+def _as_string_list(value) -> List[str]:
+    """Normalize optional scalar/list JSON values to a list of strings."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v) for v in value if v is not None]
+    return [str(value)]
+
+
 @dataclass
 class ProgrammingGuide:
     """문항 프로그래밍 지시사항 — 구조화된 형태."""
@@ -188,6 +197,9 @@ class SurveyQuestion:
     sub_items: List[str] = field(default_factory=list)
     programming_guide: Optional['ProgrammingGuide'] = None
     source_span: Optional[dict] = None
+    # Human QA / Ground Truth workflow
+    review_status: str = "needs_review"  # needs_review | verified | rejected
+    review_notes: str = ""
 
     # Stale session fallback: Streamlit 핫리로드 시 구 객체에 신규 필드가 없을 때
     # AttributeError 대신 해당 필드의 기본값 반환
@@ -238,6 +250,8 @@ class SurveyQuestion:
             "Role": self.role,
             "VariableType": self.variable_type,
             "SubItems": ", ".join(self.sub_items) if self.sub_items else "",
+            "ReviewStatus": self.review_status,
+            "ReviewNotes": self.review_notes,
         }
 
     def to_json_dict(self) -> dict:
@@ -271,6 +285,8 @@ class SurveyQuestion:
             "programming_guide": (self.programming_guide.to_json_dict()
                                    if self.programming_guide else None),
             "source_span": self.source_span,
+            "review_status": self.review_status,
+            "review_notes": self.review_notes,
         }
 
     @classmethod
@@ -309,6 +325,8 @@ class SurveyQuestion:
             programming_guide=(ProgrammingGuide.from_json_dict(d["programming_guide"])
                                 if isinstance(d.get("programming_guide"), dict) else None),
             source_span=d.get("source_span"),
+            review_status=d.get("review_status", "needs_review"),
+            review_notes=d.get("review_notes", ""),
         )
 
     @classmethod
@@ -330,12 +348,16 @@ class SurveyQuestion:
             ],
             filter_condition=d.get("filter"),
             instructions=d.get("instructions"),
+            review_status="needs_review",
             sub_items=[str(s).strip() for s in d.get("sub_items", []) if s],
             programming_guide=(ProgrammingGuide(
                 rotate_options=bool(pg.get("rotate_options", False)),
                 pipe_from=pg.get("pipe_from"),
                 exclusive_codes=pg.get("exclusive_codes", []),
-                dk_na_codes=pg.get("dk_na_codes", []),
+                show_card=bool(pg.get("show_card", False)),
+                dk_na_codes=(_as_string_list(pg.get("dk_na_codes"))
+                             or (_as_string_list(pg.get("dk_codes"))
+                                 + _as_string_list(pg.get("na_codes")))),
                 rank_limit=pg.get("rank_limit"),
                 anchor_labels=pg.get("anchor_labels", {}),
                 constant_sum_total=pg.get("constant_sum_total"),
@@ -374,6 +396,7 @@ class SurveyDocument:
                 "Instructions", "SummaryType", "TableTitle", "GrammarChecker",
                 "NetRecode", "Sort", "SubBanner", "BannerIDs",
                 "SpecialInstructions", "Role", "VariableType", "SubItems",
+                "ReviewStatus", "ReviewNotes",
             ])
         return pd.DataFrame([q.to_dict() for q in self.questions])
 

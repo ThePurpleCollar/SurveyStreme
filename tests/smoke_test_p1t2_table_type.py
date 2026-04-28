@@ -15,11 +15,6 @@ assert _classify_table([
     ["Q1_1", "1", "Very satisfied"],
     ["Q1_1", "2", "Satisfied"],
 ]) == "coding_reference"
-assert _classify_table([
-    ["Code", "Label"],
-    ["1", "Brand A"],
-    ["2", "Brand B"],
-]) == "coding_reference"
 # 한국어 키워드
 assert _classify_table([
     ["변수", "코드", "설명"],
@@ -42,6 +37,21 @@ assert _classify_table([
     ["3", "보통"],
     ["4", "불만족"],
     ["99", "모름"],
+]) == "code_label"
+assert _classify_table([
+    ["Code", "Label"],
+    ["1", "Brand A"],
+    ["2", "Brand B"],
+]) == "code_label"
+assert _classify_table([
+    ["Apple", "1"],
+    ["Samsung", "2"],
+    ["Other Android brand [PN: ANCHOR]", "4"],
+]) == "code_label"
+assert _classify_table([
+    ["Journalism, mass media, advertising, or PR agency", "1", "TERMINATE"],
+    ["Marketing, market research, or consulting firm", "2", "TERMINATE"],
+    ["None of the above [PN: ANCHOR]", "5", ""],
 ]) == "code_label"
 print("Test 4: code_label 분류 OK")
 

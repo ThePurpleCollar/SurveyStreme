@@ -12,12 +12,24 @@ from typing import List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 from models.survey import SurveyQuestion
+from services.llm_client import init_client, init_gemini
+from services.runtime_cache import (
+    get_runtime_cache,
+    set_runtime_cache,
+    stable_cache_key,
+)
+
+_EXTRACT_CHUNK_CACHE_VERSION = "extract-chunk-v1"
 
 def _is_gemini(model: str) -> bool:
     """모델명이 Gemini 계열인지 판별 (llm_client.py와 동일 로직)."""
     return model.startswith("gemini")
 
 logger = logging.getLogger(__name__)
+
+
+class LLMExtractionError(RuntimeError):
+    """Raised when LLM extraction could not run successfully."""
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -193,6 +205,48 @@ _MARKER_PREFIXES = frozenset({
     '[SCALE_HEADER', '[COL_HEADER', '[ROW]', '[TEXTBOX',
 })
 
+# Override the broad legacy density pattern with a stricter fallback. Whitespace
+# is intentionally not a delimiter here; it caused option text and normal words
+# such as "144Hz", "PN", and Korean section labels to be counted as questions.
+_DENSITY_PATTERN = re.compile(
+    r'^\s*(?:\*\*)?\[?'
+    r'([A-Za-z0-9가-힣]+[A-Za-z0-9가-힣_-]*)'
+    r'[.)\]:]',
+    re.MULTILINE,
+)
+
+
+def _looks_like_density_question_number(qn: str, rest: str) -> bool:
+    """Stricter gate for fallback density matches."""
+    token = str(qn or "").strip()
+    text = str(rest or "").strip()
+    if not token or not text:
+        return False
+    if not _is_valid_question_number(token):
+        return False
+    if not re.search(r'\d', token):
+        return False
+    if re.match(r'^\d+[A-Za-z가-힣]+$', token):
+        return False
+
+    if token.isdigit():
+        lowered = text.lower()
+        question_cues = (
+            '?' in text
+            or any(cue in lowered for cue in (
+                'which', 'what', 'why', 'how', 'please', 'select', 'choose',
+                'rate', 'indicate', 'agree', 'satisfied',
+            ))
+            or any(cue in text for cue in (
+                '어떻게', '무엇', '어느', '얼마', '왜', '선택', '응답', '평가',
+                '동의', '만족', '생각', '해당',
+            ))
+        )
+        if not question_cues and len(text) < 12:
+            return False
+
+    return True
+
 
 def regex_pre_extract(annotated_text: str) -> List[dict]:
     """느슨한 정규식으로 문항 수 밀도를 추정.
@@ -227,7 +281,10 @@ def regex_pre_extract(annotated_text: str) -> List[dict]:
                     if not (stripped.startswith('#.') or stripped.startswith('- ')
                             or stripped.startswith('|') or stripped.startswith('===')
                             or any(stripped.startswith(p) for p in _MARKER_PREFIXES)):
-                        matched = (m.group(1), stripped[m.end():].strip(), None)
+                        qn = m.group(1)
+                        rest = stripped[m.end():].strip()
+                        if _looks_like_density_question_number(qn, rest):
+                            matched = (qn, rest, None)
 
         if matched:
             if current_qn:
@@ -459,7 +516,18 @@ Extract answer_options as {code, label} pairs from these sources (in priority or
     | 99 | Prefer not to say |
     → answer_options: [{"code":"1","label":"Male"}, {"code":"2","label":"Female"}, {"code":"99","label":"Prefer not to say"}]
 
-  Source 2 — Numbered list items (#. or "N." or "N)" prefix):
+  Source 2 — reversed option table (label + code), optionally with routing/action:
+    | Apple | 1 |
+    | Samsung | 2 |
+    | Other Android brand [PN: ANCHOR] | 4 |
+    → answer_options: [{"code":"1","label":"Apple"}, {"code":"2","label":"Samsung"}, {"code":"4","label":"Other Android brand"}]
+
+    | Marketing / market research firm | 2 | TERMINATE |
+    | None of the above [PN: ANCHOR] | 5 | |
+    → answer_options: [{"code":"2","label":"Marketing / market research firm"}, {"code":"5","label":"None of the above"}]
+    → skip_logic: [{"condition":"QX=2","target":"TERMINATE"}] if this table belongs to QX.
+
+  Source 3 — Numbered list items (#. or "N." or "N)" prefix):
     Q2. Which brands have you heard of? [MA]
       #. Samsung
       #. Apple
@@ -468,19 +536,19 @@ Extract answer_options as {code, label} pairs from these sources (in priority or
     → answer_options: [{"code":"1","label":"Samsung"}, {"code":"2","label":"Apple"}, {"code":"3","label":"LG"}, {"code":"4","label":"Sony"}]
     Use sequential numbering (1, 2, 3...) as codes when list items don't have explicit codes.
 
-  Source 3 — Inline code=label pairs (scale anchors):
+  Source 4 — Inline code=label pairs (scale anchors):
     "1=전혀 아니다, 2=그렇지 않다, 3=보통, 4=그렇다, 5=매우 그렇다"
     or "1=Strongly disagree ... 5=Strongly agree"
     → answer_options: [{"code":"1","label":"전혀 아니다"}, ..., {"code":"5","label":"매우 그렇다"}]
 
-  Source 4 — Bulleted list items (- prefix):
+  Source 5 — Bulleted list items (- prefix):
     - Product quality
     - Price competitiveness
     - Brand reputation
     → answer_options: [{"code":"1","label":"Product quality"}, {"code":"2","label":"Price competitiveness"}, {"code":"3","label":"Brand reputation"}]
     Assign sequential codes when bullet items have no explicit codes.
 
-  Source 5 — "Code. Label" pattern in text:
+  Source 6 — "Code. Label" pattern in text:
     1. Very satisfied
     2. Somewhat satisfied
     3. Neither satisfied nor dissatisfied
@@ -529,8 +597,8 @@ EXAMPLE with 3 question types (SA, Grid, OE):
       "programming_guide": {
         "rotate_options": false,
         "exclusive_codes": [],
-        "dk_codes": [],
-        "na_codes": ["99"],
+        "dk_na_codes": ["99"],
+        "show_card": false,
         "pipe_from": null,
         "constant_sum_total": null,
         "rank_limit": null,
@@ -556,8 +624,8 @@ EXAMPLE with 3 question types (SA, Grid, OE):
       "programming_guide": {
         "rotate_options": true,
         "exclusive_codes": [],
-        "dk_codes": [],
-        "na_codes": [],
+        "dk_na_codes": [],
+        "show_card": true,
         "pipe_from": null,
         "constant_sum_total": null,
         "rank_limit": null,
@@ -932,6 +1000,8 @@ def _normalize_question_type(raw_type) -> Optional[str]:
 def _call_openai(client: OpenAI, model: str, system_prompt: str,
                   user_prompt: str, llm_kwargs: dict) -> tuple:
     """OpenAI 호환 API 호출. Returns: (raw_content, finish_reason)"""
+    if client is None:
+        client = init_client()
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -948,6 +1018,7 @@ def _call_openai(client: OpenAI, model: str, system_prompt: str,
 def _call_gemini(model: str, system_prompt: str,
                  user_prompt: str, llm_kwargs: dict) -> tuple:
     """Vertex AI Gemini API 호출. 안전 필터 해제로 NDA/PII 문서 차단 방지."""
+    init_gemini()
     from vertexai.generative_models import (
         GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold,
     )
@@ -1005,14 +1076,25 @@ def extract_questions_from_chunk(
     """LLM 전면 추출 — 정규식 힌트 없이 LLM이 단독으로 문항 식별"""
     user_prompt = _build_prompt(chunk_text, chunk_index, total_chunks, chunk_context)
     llm_kwargs = _get_llm_kwargs(model)
+    cache_key = stable_cache_key(
+        _EXTRACT_CHUNK_CACHE_VERSION, model, SYSTEM_PROMPT, user_prompt, llm_kwargs,
+    )
 
     try:
-        if _is_gemini(model):
-            raw_content, finish_reason = _call_gemini(
-                model, SYSTEM_PROMPT, user_prompt, llm_kwargs)
+        hit, cached = get_runtime_cache("llm_extract_chunk", cache_key)
+        if hit:
+            raw_content, finish_reason = cached
+            logger.info("Chunk %s: extraction cache hit", chunk_index)
         else:
-            raw_content, finish_reason = _call_openai(
-                client, model, SYSTEM_PROMPT, user_prompt, llm_kwargs)
+            if _is_gemini(model):
+                raw_content, finish_reason = _call_gemini(
+                    model, SYSTEM_PROMPT, user_prompt, llm_kwargs)
+            else:
+                raw_content, finish_reason = _call_openai(
+                    client, model, SYSTEM_PROMPT, user_prompt, llm_kwargs)
+            set_runtime_cache(
+                "llm_extract_chunk", cache_key, (raw_content, finish_reason)
+            )
 
         if finish_reason == 'length':
             logger.warning(f"Chunk {chunk_index}: Response truncated (finish_reason=length)")
@@ -1146,11 +1228,12 @@ def _max_questions_for_model(model: str) -> int:
     """모델별 청크당 최대 문항 수.
 
     각 문항 JSON ≈ 200-300 토큰 (보기, 스킵, 필터, programming_guide 포함).
-    Gemini: 65K 출력 → 안전하게 150문항 (~45K 토큰)
+    Gemini: 65K 출력 → 안전하게 100문항. 보기/스킵/필터가 많은
+    실제 설문지는 문항당 출력량이 커서 150문항은 잘림 위험이 있다.
     기타: 16K 출력 → 60문항
     """
     if _is_gemini(model):
-        return 150
+        return 100
     return 60
 
 
@@ -1261,6 +1344,7 @@ def extract_survey_questions(
         chunk_contexts.append(ctx)
 
     # 2단계: LLM 전면 추출 (병렬)
+    chunk_errors = []
     if total_chunks == 1:
         _notify("chunk_start", {
             "chunk_index": 0, "total_chunks": 1,
@@ -1272,6 +1356,7 @@ def extract_survey_questions(
                 chunk_context=chunk_contexts[0],
             )
         except Exception as e:
+            chunk_errors.append((0, str(e)))
             result = []
             _notify("chunk_error", {
                 "chunk_index": 0, "total_chunks": 1,
@@ -1306,6 +1391,7 @@ def extract_survey_questions(
                     idx, result = future.result()
                 except Exception as e:
                     idx = futures[future]
+                    chunk_errors.append((idx, str(e)))
                     result = []
                     logger.error(f"Chunk {idx} extraction failed: {e}")
                     _notify("chunk_error", {
@@ -1319,6 +1405,13 @@ def extract_survey_questions(
                 })
 
     # 3단계: 병합
+    if chunk_errors and len(chunk_errors) >= total_chunks:
+        first_idx, first_error = chunk_errors[0]
+        raise LLMExtractionError(
+            f"All {total_chunks} extraction chunk(s) failed. "
+            f"First failure was chunk {first_idx + 1}: {first_error}"
+        )
+
     merged = merge_chunk_results(chunk_results)
 
     questions = []

@@ -12,8 +12,9 @@ from typing import List
 from services.docx_parser import DocxSection, DocxParagraph, DocxTable
 from services.docx_renderer import render_sections_to_annotated_text, render_section
 
-# 최대 청크 크기 (문자 수). ~200K자 ≈ ~50K 토큰.
-MAX_CHUNK_CHARS = 200000
+# 최대 청크 크기 (문자 수). 설문지는 문항별 JSON 출력량이 커서
+# 입력 컨텍스트보다 출력 한도가 먼저 병목이 된다.
+MAX_CHUNK_CHARS = 80000
 
 # ── Ultra-loose 분할 지점 패턴 (대괄호 시작 허용) ──
 # 영어/숫자/한글 등으로 시작하고 구분자가 따르는 줄. [DE1. ...] 형태도 포함.
@@ -101,14 +102,22 @@ def _split_section_at_content(section: DocxSection, max_chars: int) -> List[str]
     current_items = []
     current_size = 0
     heading_text = section.heading
+    hard_limit = int(max_chars * 1.25)
 
     for item in section.content:
         item_size = _estimate_item_size(item)
 
         # 분할 후보이면서 이미 누적된 내용이 크면 분할
         # DocxTable은 _is_split_candidate에서 False → 표 중간 분할 방지
-        if (_is_split_candidate(item) and
-                current_size + item_size > max_chars and current_items):
+        should_split_at_candidate = (
+            _is_split_candidate(item) and
+            current_size + item_size > max_chars and current_items
+        )
+        should_split_at_hard_limit = (
+            current_size >= hard_limit and current_items
+        )
+
+        if should_split_at_candidate or should_split_at_hard_limit:
             temp_section = DocxSection(heading=heading_text, content=current_items)
             chunks.append(render_section(temp_section))
             current_items = []

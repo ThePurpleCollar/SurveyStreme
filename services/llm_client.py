@@ -4,6 +4,12 @@ import logging
 import streamlit as st
 from openai import OpenAI
 from dotenv import load_dotenv
+from services.network_config import sanitize_proxy_environment
+from services.runtime_cache import (
+    get_runtime_cache,
+    set_runtime_cache,
+    stable_cache_key,
+)
 
 load_dotenv()
 
@@ -24,6 +30,7 @@ DEFAULT_MODEL = "gemini-2.5-flash"
 
 _GEMINI_INITIALIZED = False
 _openai_client = None
+_LLM_CACHE_VERSION = "llm-client-v1"
 
 
 def _is_gemini(model: str) -> bool:
@@ -36,6 +43,8 @@ def _get_openai_client() -> OpenAI:
     global _openai_client
     if _openai_client is not None:
         return _openai_client
+
+    sanitize_proxy_environment()
 
     if not LITELLM_API_KEY:
         st.error("LiteLLM API key (LITELLM_API_KEY) not found in .env file.")
@@ -50,6 +59,8 @@ def init_gemini():
     global _GEMINI_INITIALIZED
     if _GEMINI_INITIALIZED:
         return
+
+    sanitize_proxy_environment()
 
     if not LITELLM_API_KEY:
         st.error("LiteLLM API key (LITELLM_API_KEY) not found in .env file.")
@@ -94,19 +105,7 @@ def init_gemini():
 
 def init_client():
     """OpenAI 호환 클라이언트 초기화 (PDF 경로 등 레거시 용)"""
-    if not LITELLM_API_KEY:
-        st.error("LiteLLM API key (LITELLM_API_KEY) not found in .env file.")
-        st.stop()
-
-    try:
-        client = OpenAI(
-            api_key=LITELLM_API_KEY,
-            base_url=LITELLM_BASE_URL
-        )
-        return client
-    except Exception as e:
-        st.error(f"Failed to initialize OpenAI client: {e}")
-        st.stop()
+    return _get_openai_client()
 
 
 _RETRYABLE_ERRORS = (ConnectionError, TimeoutError, OSError)
@@ -153,6 +152,14 @@ def call_llm(prompt: str, model: str = DEFAULT_MODEL, *,
     Returns:
         LLM 응답 텍스트
     """
+    cache_key = stable_cache_key(
+        _LLM_CACHE_VERSION, "text", model, prompt, temperature, top_p, max_tokens,
+    )
+    hit, cached = get_runtime_cache("llm_text", cache_key)
+    if hit:
+        logger.info("LLM text cache hit for model=%s", model)
+        return cached
+
     def _do_call():
         if _is_gemini(model):
             init_gemini()
@@ -197,7 +204,9 @@ def call_llm(prompt: str, model: str = DEFAULT_MODEL, *,
                 raise ValueError("OpenAI response returned empty content")
             return content.strip()
 
-    return _retry_with_backoff(_do_call)
+    result = _retry_with_backoff(_do_call)
+    set_runtime_cache("llm_text", cache_key, result)
+    return result
 
 
 def call_llm_json(system_prompt: str, user_prompt: str, model: str = DEFAULT_MODEL, *,
@@ -216,6 +225,15 @@ def call_llm_json(system_prompt: str, user_prompt: str, model: str = DEFAULT_MOD
     """
     import json
     import re
+
+    cache_key = stable_cache_key(
+        _LLM_CACHE_VERSION, "json", model, system_prompt, user_prompt,
+        temperature, top_p, max_tokens,
+    )
+    hit, cached = get_runtime_cache("llm_json", cache_key)
+    if hit:
+        logger.info("LLM JSON cache hit for model=%s", model)
+        return cached
 
     def _parse_json_safe(text: str) -> dict:
         """Parse JSON with fallback: strip markdown fences if present."""
@@ -278,7 +296,9 @@ def call_llm_json(system_prompt: str, user_prompt: str, model: str = DEFAULT_MOD
                 raise ValueError("OpenAI JSON response returned empty content")
             return _parse_json_safe(content)
 
-    return _retry_with_backoff(_do_call)
+    result = _retry_with_backoff(_do_call)
+    set_runtime_cache("llm_json", cache_key, result)
+    return result
 
 
 def question_summary(client, text, model=DEFAULT_MODEL):

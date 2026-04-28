@@ -4,7 +4,6 @@ import streamlit as st
 from streamlit_option_menu import option_menu
 import logging
 
-from services.llm_client import init_client, init_gemini
 from pages.doc_analyzer import page_document_processing
 from pages.table_guide import page_table_guide_builder
 from pages.survey_qa import page_survey_qa
@@ -35,8 +34,12 @@ st.set_page_config(
 
 logging.info("User accessed the application.")
 
+
+def init_gemini():
+    """Legacy no-op; LLM clients initialize lazily in call sites."""
+    return None
+
 # --- 클라이언트 초기화 ---
-client = init_client()
 init_gemini()  # Vertex AI SDK 초기화 (Gemini 모델 사용)
 
 
@@ -188,7 +191,7 @@ with st.sidebar:
 # 페이지 라우팅
 # ============================================================
 if page == 'Questionnaire Analyzer':
-    page_document_processing(uploaded_file, client)
+    page_document_processing(uploaded_file)
     render_download_buttons("Questionnaire Analyzer", include_excel=True)
 
 elif page == 'Table Guide Builder':
