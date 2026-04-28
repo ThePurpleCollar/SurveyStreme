@@ -568,12 +568,13 @@ Extract answer_options as {code, label} pairs from these sources (in priority or
 
 For each question, provide ALL of these fields:
 1. **question_number**: The question identifier (e.g., "Q1", "SC2", "SQ1a")
-2. **question_text**: The question text WITHOUT the number prefix or type brackets
-3. **question_type**: SA, MA, OE, NUMERIC, SCALE, RANK, GRID, MATRIX, or original notation (e.g., "5pt x 7", "Top3")
-4. **answer_options**: Array of {code, label} for ALL listed answer options (see ANSWER OPTIONS rules above)
-5. **skip_logic**: Array of {condition, target}. From "IF", "Go to", "Skip to", arrows, [PN: ...]
-6. **filter**: Who answers this question. From "ASK IF", "ONLY IF", "모두에게", "[PN: ...]"
-7. **instructions**: Interviewer notes (e.g., "SHOW CARD", "ROTATE", "보기 로테이션")
+2. **source_variable**: The actual data/Syntax variable name if explicitly shown. If no separate data variable is shown, use the same value as question_number.
+3. **question_text**: The question text WITHOUT the number prefix or type brackets
+4. **question_type**: SA, MA, OE, NUMERIC, SCALE, RANK, GRID, MATRIX, or original notation (e.g., "5pt x 7", "Top3")
+5. **answer_options**: Array of {code, label} for ALL listed answer options (see ANSWER OPTIONS rules above)
+6. **skip_logic**: Array of {condition, target}. From "IF", "Go to", "Skip to", arrows, [PN: ...]
+7. **filter**: Who answers this question. From "ASK IF", "ONLY IF", "모두에게", "[PN: ...]"
+8. **instructions**: Interviewer notes (e.g., "SHOW CARD", "ROTATE", "보기 로테이션")
 
 OUTPUT: Return ONLY valid JSON matching this exact structure. Do NOT include markdown code blocks.
 
@@ -583,6 +584,7 @@ EXAMPLE with 3 question types (SA, Grid, OE):
   "questions": [
     {
       "question_number": "DE1",
+      "source_variable": "DE1",
       "question_text": "How would you describe the area where you live?",
       "question_type": "SA",
       "answer_options": [
@@ -608,6 +610,7 @@ EXAMPLE with 3 question types (SA, Grid, OE):
     },
     {
       "question_number": "Q5",
+      "source_variable": "Q5",
       "question_text": "Please rate each brand on the following attributes.",
       "question_type": "5pt x 3",
       "answer_options": [
@@ -635,6 +638,7 @@ EXAMPLE with 3 question types (SA, Grid, OE):
     },
     {
       "question_number": "Q10",
+      "source_variable": "Q10",
       "question_text": "Is there anything else you would like to tell us?",
       "question_type": "OE",
       "answer_options": [],

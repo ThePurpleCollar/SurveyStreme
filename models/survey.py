@@ -175,6 +175,7 @@ class SurveyQuestion:
     filter_condition: Optional[str] = None     # "Q2=3,4 응답자만"
     instructions: Optional[str] = None         # "SHOW CARD", "보기 로테이션"
     # 기존 호환 필드
+    source_variable: str = ""   # 실제 데이터/Syntax 변수명. 비어 있으면 question_number 사용.
     summary_type: str = ""
     table_number: str = ""
     table_title: str = ""
@@ -232,6 +233,7 @@ class SurveyQuestion:
         """DataFrame 변환용 딕셔너리"""
         return {
             "QuestionNumber": self.question_number,
+            "SourceVariable": self.source_variable or self.question_number,
             "TableNumber": self.table_number,
             "QuestionText": self.question_text,
             "QuestionType": self.question_type or "",
@@ -258,6 +260,7 @@ class SurveyQuestion:
         """세션 저장용 JSON 딕셔너리 (모든 필드 포함, 무손실)"""
         return {
             "question_number": self.question_number,
+            "source_variable": self.source_variable,
             "question_text": self.question_text,
             "question_type": self.question_type,
             "answer_options": [
@@ -294,6 +297,7 @@ class SurveyQuestion:
         """세션 JSON에서 SurveyQuestion 복원 (후처리 필드 포함)"""
         return cls(
             question_number=d.get("question_number", ""),
+            source_variable=d.get("source_variable", d.get("sourceVariable", d.get("question_number", ""))),
             question_text=d.get("question_text", ""),
             question_type=d.get("question_type"),
             answer_options=[
@@ -334,6 +338,7 @@ class SurveyQuestion:
         """LLM 추출 JSON에서 SurveyQuestion 생성"""
         return cls(
             question_number=d.get("question_number", ""),
+            source_variable=d.get("source_variable", d.get("sourceVariable", d.get("question_number", ""))),
             question_text=d.get("question_text", ""),
             question_type=d.get("question_type"),
             answer_options=[
@@ -391,7 +396,7 @@ class SurveyDocument:
         """기존 edited_df와 호환되는 DataFrame 생성"""
         if not self.questions:
             return pd.DataFrame(columns=[
-                "QuestionNumber", "TableNumber", "QuestionText", "QuestionType",
+                "QuestionNumber", "SourceVariable", "TableNumber", "QuestionText", "QuestionType",
                 "AnswerOptions", "SkipLogic", "Filter",
                 "Instructions", "SummaryType", "TableTitle", "GrammarChecker",
                 "NetRecode", "Sort", "SubBanner", "BannerIDs",

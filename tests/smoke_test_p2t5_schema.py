@@ -14,23 +14,26 @@ assert q.sub_items == []
 assert q.programming_guide is None
 assert q.review_status == "needs_review"
 assert q.review_notes == ""
+assert q.source_variable == ""
 print("Test 2: SurveyQuestion 기본값 OK")
 
 # Test 3: sub_items + programming_guide 직렬화
 q2 = SurveyQuestion(
-    question_number="Q5", question_text="브랜드 평가",
+    question_number="Q5", source_variable="Q5_1", question_text="브랜드 평가",
     question_type="5pt x 3",
     sub_items=["브랜드 이미지", "제품 품질", "가격 경쟁력"],
     programming_guide=ProgrammingGuide(rotate_options=True, dk_na_codes=["99"])
 )
 d = q2.to_json_dict()
 assert d["sub_items"] == ["브랜드 이미지", "제품 품질", "가격 경쟁력"]
+assert d["source_variable"] == "Q5_1"
 assert d["programming_guide"]["rotate_options"] == True
 print("Test 3: 직렬화 OK")
 
 # Test 4: JSON 라운드트립
 q3 = SurveyQuestion.from_json_dict(d)
 assert q3.sub_items == ["브랜드 이미지", "제품 품질", "가격 경쟁력"]
+assert q3.source_variable == "Q5_1"
 assert q3.programming_guide.rotate_options == True
 print("Test 4: JSON 라운드트립 OK")
 
@@ -45,11 +48,12 @@ q_old = SurveyQuestion.from_json_dict(old)
 assert q_old.sub_items == []
 assert q_old.programming_guide is None
 assert q_old.review_status == "needs_review"
+assert q_old.source_variable == "Q1"
 print("Test 5: 구 JSON 하위 호환 OK")
 
 # Test 6: from_llm_dict
 llm_dict = {
-    "question_number": "Q5", "question_text": "브랜드 평가",
+    "question_number": "Q5", "source_variable": "Q5_1", "question_text": "브랜드 평가",
     "question_type": "5pt x 3",
     "answer_options": [{"code": "1", "label": "전혀 아님"}],
     "sub_items": ["브랜드 이미지", "제품 품질"],
@@ -58,6 +62,7 @@ llm_dict = {
 }
 q_llm = SurveyQuestion.from_llm_dict(llm_dict)
 assert q_llm.sub_items == ["브랜드 이미지", "제품 품질"]
+assert q_llm.source_variable == "Q5_1"
 assert q_llm.programming_guide.show_card == True
 assert q_llm.programming_guide.dk_na_codes == ["99"]
 print("Test 6: from_llm_dict OK")
@@ -70,6 +75,7 @@ llm_dict2 = {
 q_llm2 = SurveyQuestion.from_llm_dict(llm_dict2)
 assert q_llm2.programming_guide is None
 assert q_llm2.sub_items == []
+assert q_llm2.source_variable == "Q1"
 print("Test 7: from_llm_dict without programming_guide OK")
 
 # Test 8: legacy LLM dk_codes/na_codes 호환
@@ -86,6 +92,7 @@ print("Test 8: legacy dk_codes/na_codes 호환 OK")
 doc = SurveyDocument(filename="test.docx", questions=[q2])
 df = doc.to_dataframe()
 assert "SubItems" in df.columns
+assert "SourceVariable" in df.columns
 assert "ReviewStatus" in df.columns
 assert "ReviewNotes" in df.columns
 print("Test 9: DataFrame SubItems 컬럼 OK")

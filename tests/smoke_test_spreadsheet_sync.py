@@ -10,6 +10,7 @@ from ui.spreadsheet import apply_spreadsheet_edits_to_document
 doc = SurveyDocument(filename="test.docx", questions=[
     SurveyQuestion(
         question_number="Q1",
+        source_variable="OLD_VAR",
         table_number="Q1",
         question_text="Original",
         question_type="SA",
@@ -21,6 +22,7 @@ edited = pd.DataFrame([
     {
         "ReviewStatus": "verified",
         "QuestionNumber": "Q1",
+        "SourceVariable": "NEW_VAR",
         "TableNumber": "Q1",
         "QuestionText": "Updated",
         "QuestionType": "MA",
@@ -34,6 +36,7 @@ edited = pd.DataFrame([
     {
         "ReviewStatus": "needs_review",
         "QuestionNumber": "Q2",
+        "SourceVariable": "Q2_VAR",
         "TableNumber": "Q2",
         "QuestionText": "Added manually",
         "QuestionType": "OE",
@@ -51,6 +54,7 @@ doc = apply_spreadsheet_edits_to_document(doc, edited)
 assert len(doc.questions) == 2
 q1 = doc.questions[0]
 assert q1.question_text == "Updated"
+assert q1.source_variable == "NEW_VAR"
 assert q1.question_type == "MA"
 assert q1.answer_options[1].label == "Samsung"
 assert q1.skip_logic[0].target == "Q3"
@@ -59,6 +63,7 @@ assert q1.review_notes == "Checked against source"
 
 q2 = doc.questions[1]
 assert q2.question_number == "Q2"
+assert q2.source_variable == "Q2_VAR"
 assert q2.question_text == "Added manually"
 
 print("ALL SPREADSHEET SYNC TESTS PASSED")

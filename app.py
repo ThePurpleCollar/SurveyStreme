@@ -1,5 +1,6 @@
 import os
 import json
+import sys
 import streamlit as st
 from streamlit_option_menu import option_menu
 import logging
@@ -25,6 +26,34 @@ logging.basicConfig(
     ]
 )
 
+
+def _setup_hub_llm_logging():
+    """Enable Ipsos AI Hub LLM usage logging when the Hub module is available."""
+    hub_services_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "services")
+    )
+    if os.path.isdir(hub_services_dir) and hub_services_dir not in sys.path:
+        sys.path.insert(0, hub_services_dir)
+
+    try:
+        import hub_llm_logger
+        from hub_llm_logger import setup_llm_logging
+    except Exception as e:
+        logging.warning("Hub LLM logging unavailable: %s", e)
+        return
+
+    if getattr(hub_llm_logger, "_survey_stream_logging_configured", False):
+        return
+
+    # LLM 사용량 자동 로깅 — 서비스 업데이트 시 유지 필수
+    setup_llm_logging(
+        service_id=1,
+        service_name="Survey Stream",
+        get_user_id=lambda: st.session_state.get("auth_user", {}).get("id", "anonymous"),
+    )
+    setattr(hub_llm_logger, "_survey_stream_logging_configured", True)
+
+
 # --- 페이지 설정 ---
 st.set_page_config(
     page_title="Survey Stream",
@@ -32,6 +61,7 @@ st.set_page_config(
     layout="wide"
 )
 
+_setup_hub_llm_logging()
 logging.info("User accessed the application.")
 
 

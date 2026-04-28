@@ -21,15 +21,24 @@ from services.table_guide_service import (
     _banner_id_from_index,
     analyze_survey_intelligence,
     assign_banners_to_questions,
+    build_dp_handoff_validation_summary,
     compile_table_guide, expand_banner_ids, export_dp_handoff_excel,
     export_table_guide_excel,
     generate_net_recodes,
     generate_sort_orders, generate_special_instructions,
     suggest_banner_points, suggest_sub_banners,
 )
+from services.table_title_service import (
+    build_title_domain_vocabulary as _title_domain_vocabulary,
+    normalize_title_by_intent as _normalize_title_by_intent,
+    polish_generated_title as _polish_generated_title,
+    standard_title_for_question as _standard_title_for_question,
+    title_case_mr as _title_case_mr,
+)
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 20
+TITLE_BATCH_WORKERS = 3
 TABLE_GUIDE_EXPORT_CACHE_VERSION = "table-guide-excel-v1"
 DP_HANDOFF_EXPORT_CACHE_VERSION = "dp-handoff-excel-v1"
 
@@ -142,7 +151,14 @@ SPSS 교차분석표에서 사용하는 Table Title을 생성합니다.
 4. **금지 단어**: '조사', '응답자', '분포', '확인', '~에 대한', '~별'
 5. **접미사 금지**: 순위, Summary, Mean 등의 접미사는 시스템이 자동 추가하므로 base title에 포함하지 마세요.
 6. **base title만 생성**: 분할 행(TopN 순위, 매트릭스 Summary 등)의 접미사는 시스템이 추가합니다. 순수한 주제 명사구만 생성하세요.
-7. **설문 전체 맥락 활용**: Survey Context가 제공되면, 해당 문항이 설문 전체에서 어떤 역할(인지→경험→평가→의향 등)을 하는지 파악하여 더 정확하고 구체적인 제목을 생성하세요.
+7. **질문 요약 금지**: 질문 문구를 그대로 줄이지 말고, 조사 유형/도메인에서 쓰는 Table Title 용어로 변환하세요.
+8. **설문 전체 맥락 활용**: Survey Context가 제공되면, 해당 문항이 설문 전체에서 어떤 역할(인지→경험→평가→의향 등)을 하는지 파악하여 더 정확하고 구체적인 제목을 생성하세요.
+9. **의도 기반 명명**:
+   - "important when buying/choosing/considering" → 핵심 구매 요인(Key Buying Factors)
+   - "why choose/purchase/use" → 선택 이유/구매 이유
+   - "aware/know/heard of" → 보조 인지(Aided Awareness)
+   - "consider/willing/likely to buy" → 구매 의향(Purchase Intent) 또는 브랜드 고려
+   - "satisfied/recommend" → 만족도/NPS
 
 ## JSON 출력 형식
 
@@ -177,7 +193,14 @@ You generate Table Titles used in SPSS cross-tabulation tables.
 4. **Forbidden words**: 'survey', 'respondent', 'distribution', 'check', 'about', 'by'
 5. **No suffixes**: Ranking, Summary, Mean suffixes are added by the system automatically. Do NOT include them in the base title.
 6. **Base title only**: Split-row suffixes (TopN ranks, matrix Summary, etc.) are added by the system. Generate only the pure topic noun phrase.
-7. **Use survey context**: When Survey Context is provided, understand each question's role in the overall study flow (e.g., awareness → usage → evaluation → intent) to generate more precise and contextually appropriate titles.
+7. **Do not summarize question wording literally**: Convert the question intent into a standard domain/MR table-title term.
+8. **Use survey context**: When Survey Context is provided, understand each question's role in the overall study flow (e.g., awareness → usage → evaluation → intent) to generate more precise and contextually appropriate titles.
+9. **Intent-based naming**:
+   - "important when buying/choosing/considering" → Key Buying Factors
+   - "why choose/purchase/use" → Choice Reasons / Purchase Reasons
+   - "aware/know/heard of" → Aided Awareness
+   - "consider/willing/likely to buy" → Purchase Intent or Brand Consideration
+   - "satisfied/recommend" → Satisfaction / NPS
 
 ## JSON Output Format
 
@@ -200,6 +223,10 @@ def _group_rows_by_question(df: pd.DataFrame) -> list:
     """DataFrame 행을 QuestionNumber 기준으로 그룹화."""
     groups = []
     seen = {}
+    doc_questions = {
+        q.question_number: q
+        for q in _get_questions()
+    }
 
     for _, row in df.iterrows():
         qn = str(row.get("QuestionNumber", "")).strip()
@@ -207,18 +234,36 @@ def _group_rows_by_question(df: pd.DataFrame) -> list:
             continue
 
         if qn not in seen:
+            q = doc_questions.get(qn)
             text = str(row.get("QuestionText", "")).strip()
             qtype = str(row.get("QuestionType", "")).strip()
             options = str(row.get("AnswerOptions", "")).strip() if "AnswerOptions" in df.columns else ""
             filt = str(row.get("Filter", "")).strip() if "Filter" in df.columns else ""
+            instructions = str(row.get("Instructions", "")).strip() if "Instructions" in df.columns else ""
+            source_var = str(row.get("SourceVariable", "")).strip() if "SourceVariable" in df.columns else ""
+            if q:
+                instructions = instructions or (q.instructions or "")
+                source_var = source_var or (getattr(q, "source_variable", "") or "")
+                role = q.role or ""
+                variable_type = q.variable_type or ""
+                analytical_value = q.analytical_value or ""
+                skip_logic = q.skip_logic_display()
+            else:
+                role = variable_type = analytical_value = skip_logic = ""
 
             seen[qn] = len(groups)
             groups.append({
                 "qn": qn,
+                "source_variable": source_var,
                 "text": text,
                 "qtype": qtype,
                 "options": options,
                 "filter": filt,
+                "instructions": instructions,
+                "skip_logic": skip_logic,
+                "role": role,
+                "variable_type": variable_type,
+                "analytical_value": analytical_value,
                 "summary_types": [],
                 "table_numbers": [],
             })
@@ -237,9 +282,17 @@ def _group_rows_by_question(df: pd.DataFrame) -> list:
 
 def _format_question_for_prompt(item: dict) -> str:
     parts = [f"[{item['qn']}]"]
+    if item.get("source_variable"):
+        parts.append(f"SourceVariable: {item['source_variable']}")
     parts.append(f"Text: {item['text']}")
     if item["qtype"]:
         parts.append(f"Type: {item['qtype']}")
+    if item.get("role"):
+        parts.append(f"Role: {item['role']}")
+    if item.get("variable_type"):
+        parts.append(f"VariableType: {item['variable_type']}")
+    if item.get("analytical_value"):
+        parts.append(f"AnalyticalValue: {item['analytical_value']}")
     if item["options"]:
         parts.append(f"Options: {item['options']}")
     unique_st = list(dict.fromkeys(s for s in item["summary_types"] if s))
@@ -248,14 +301,19 @@ def _format_question_for_prompt(item: dict) -> str:
     parts.append(f"Split Rows: {item['row_count']}")
     if item["filter"]:
         parts.append(f"Filter: {item['filter']}")
+    if item.get("instructions"):
+        parts.append(f"Instructions: {item['instructions']}")
+    if item.get("skip_logic"):
+        parts.append(f"SkipLogic: {item['skip_logic']}")
     return "\n".join(parts)
 
 
-def _build_batch_prompt(batch: list, survey_context: str = "") -> str:
+def _build_batch_prompt(batch: list, survey_context: str = "", language: str = "en") -> str:
     parts = []
     if survey_context:
         parts.append(survey_context)
         parts.append("")
+    parts.append(_title_domain_vocabulary(survey_context, language))
     parts.append("Generate cross-table titles for the following survey questions:")
     parts.append("")
     sections = [_format_question_for_prompt(item) for item in batch]
@@ -335,7 +393,7 @@ def _expand_results_to_rows(base_titles: dict, groups: list, language: str) -> l
     for g in groups:
         qn = g["qn"]
         info = base_titles.get(qn, {"title": "", "reasoning": ""})
-        base_title = info["title"]
+        base_title = _normalize_title_by_intent(info["title"], g, language)
         reasoning = info["reasoning"]
         error = not bool(base_title)
         rows = _apply_suffixes(base_title, g["qtype"], g["summary_types"], g["table_numbers"], language)
@@ -358,23 +416,34 @@ def _run_title_generation(df: pd.DataFrame, language: str, progress_callback,
     total_batches = len(batches)
     all_base_titles = {}
 
-    for batch_idx, batch in enumerate(batches):
-        progress_callback("batch_start", {
-            "batch_index": batch_idx, "total_batches": total_batches,
-            "question_count": len(batch),
-        })
-        user_prompt = _build_batch_prompt(batch, survey_context)
+    def _generate_batch(batch_idx: int, batch: list) -> tuple[int, dict]:
+        user_prompt = _build_batch_prompt(batch, survey_context, language)
         try:
             raw = call_llm_json(system_prompt, user_prompt, MODEL_TITLE_GENERATOR)
             parsed = _parse_batch_result(raw, batch)
         except Exception as e:
             logger.error(f"Title batch {batch_idx} failed: {e}")
             parsed = {item["qn"]: {"title": "", "reasoning": f"Error: {e}"} for item in batch}
-        all_base_titles.update(parsed)
-        progress_callback("batch_done", {
-            "batch_index": batch_idx, "total_batches": total_batches,
-            "generated_count": sum(1 for v in parsed.values() if v["title"]),
-        })
+        return batch_idx, parsed
+
+    max_workers = min(total_batches, TITLE_BATCH_WORKERS)
+    progress_callback("run_start", {
+        "total_batches": total_batches,
+        "question_count": len(groups),
+        "workers": max_workers,
+    })
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_generate_batch, batch_idx, batch): batch_idx
+            for batch_idx, batch in enumerate(batches)
+        }
+        for future in as_completed(futures):
+            batch_idx, parsed = future.result()
+            all_base_titles.update(parsed)
+            progress_callback("batch_done", {
+                "batch_index": batch_idx, "total_batches": total_batches,
+                "generated_count": sum(1 for v in parsed.values() if v["title"]),
+            })
 
     return _expand_results_to_rows(all_base_titles, groups, language)
 
@@ -553,7 +622,7 @@ def _run_banner_generation_only(df: pd.DataFrame, language: str):
                     progress = min(progress + 0.06, 0.98)
                 progress_bar.progress(progress)
                 phase_line.write(f"{label} {state or 'running'}")
-                detail_line.write(f"경과 {_format_elapsed()} | 고품질 배너 생성을 진행 중입니다.")
+                detail_line.write(f"경과 {_format_elapsed()} | 배너 생성을 진행 중입니다.")
             elif event == "expert_done":
                 name = data.get("name", "Expert")
                 status_text = "완료" if data.get("success") else "실패"
@@ -779,18 +848,20 @@ def _tab_table_titles(df: pd.DataFrame, language: str):
             total_batches_ref = [1]
 
             def _progress_callback(event, data):
-                if event == "batch_start":
+                if event == "run_start":
                     total_batches_ref[0] = data["total_batches"]
                     log_area.text(
-                        f"배치 {data['batch_index'] + 1}/{data['total_batches']} 처리 중 "
-                        f"({data['question_count']}개 문항)..."
+                        f"{data['total_batches']}개 배치를 병렬 처리 중 "
+                        f"({data['question_count']}개 문항, worker {data['workers']}개)..."
                     )
                 elif event == "batch_done":
+                    total_batches_ref[0] = data["total_batches"]
                     batch_done_count[0] += 1
                     progress_bar.progress(batch_done_count[0] / total_batches_ref[0])
                     log_area.text(
                         f"배치 {data['batch_index'] + 1}/{data['total_batches']} 완료 "
-                        f"({data['generated_count']}개 생성)"
+                        f"({data['generated_count']}개 생성) · "
+                        f"{batch_done_count[0]}/{data['total_batches']} 완료"
                     )
 
             questions = _get_questions()
@@ -1389,7 +1460,7 @@ def _tab_banner_setup(df: pd.DataFrame, language: str):
 
                 # Rationale 표시
                 if banner.rationale:
-                    st.caption(f"Rationale: {banner.rationale}")
+                    st.caption(f"선정 이유: {banner.rationale}")
 
                 # Banner Points 편집 가능 테이블
                 bp_data = []
@@ -1548,6 +1619,10 @@ def _tab_review_export(df: pd.DataFrame, language: str):
     # Preview
     tg_doc = st.session_state.get("compiled_table_guide")
     if tg_doc:
+        # Keep downloads and preview aligned with the latest in-session edits.
+        tg_doc = compile_table_guide(doc, project_name, language)
+        st.session_state["compiled_table_guide"] = tg_doc
+
         st.subheader("미리보기")
         preview_df = pd.DataFrame(tg_doc.rows)
 
@@ -1565,13 +1640,13 @@ def _tab_review_export(df: pd.DataFrame, language: str):
 
         if preview_mode == "Full Table":
             cols = [
-                "QuestionNumber", "TableNumber", "TableTitle", "QuestionType",
+                "QuestionNumber", "SourceVariable", "TableNumber", "TableTitle", "QuestionType",
                 "Sort", "NetRecode", "BannerNames", "SubBanner",
                 "SpecialInstructions",
             ]
         elif preview_mode == "Identity & Titles":
             cols = ["QuestionNumber", "TableNumber", "QuestionText",
-                    "TableTitle", "QuestionType", "SummaryType"]
+                    "SourceVariable", "TableTitle", "QuestionType", "SummaryType"]
         elif preview_mode == "Analysis Fields":
             cols = ["QuestionNumber", "Sort", "NetRecode",
                     "SummaryType", "Filter"]
@@ -1586,6 +1661,23 @@ def _tab_review_export(df: pd.DataFrame, language: str):
 
         # Download buttons
         st.subheader("다운로드")
+        dp_summary = build_dp_handoff_validation_summary(tg_doc, doc)
+        if dp_summary["total_review"]:
+            st.warning(
+                "DP Handoff 검증에서 확인 필요 항목이 있습니다. "
+                f"Table Guide {dp_summary['table_review']}건, "
+                f"Banner Spec {dp_summary['banner_review']}건을 확인해주세요.",
+                icon="⚠️",
+            )
+            with st.expander("DP Handoff 확인 필요 항목", expanded=False):
+                for warning in dp_summary["warnings"]:
+                    st.markdown(f"- {warning}")
+        else:
+            st.success(
+                f"DP Handoff 검증 완료 — Table Guide {dp_summary['table_ready']}행, "
+                f"Banner Spec {dp_summary['banner_ready']}개 값이 Ready for DP 상태입니다.",
+                icon="✅",
+            )
         dl_col1, dl_col2, dl_col3, dl_col4 = st.columns(4)
 
         with dl_col1:
@@ -1611,7 +1703,7 @@ def _tab_review_export(df: pd.DataFrame, language: str):
 
         with dl_col3:
             csv_cols = [
-                "QuestionNumber", "TableNumber", "QuestionText", "TableTitle",
+                "QuestionNumber", "SourceVariable", "TableNumber", "QuestionText", "TableTitle",
                 "QuestionType", "SummaryType", "Sort", "NetRecode",
                 "BannerIDs", "SubBanner", "SpecialInstructions", "Filter",
             ]
@@ -2058,13 +2150,21 @@ def page_table_guide_builder():
                 total_batches_ref = [1]
 
                 def _title_cb(event, data):
-                    if event == "batch_start":
+                    if event == "run_start":
                         total_batches_ref[0] = data["total_batches"]
-                        log_area.text(f"배치 {data['batch_index'] + 1}/{data['total_batches']} 처리 중...")
+                        log_area.text(
+                            f"{data['total_batches']}개 배치를 병렬 처리 중 "
+                            f"({data['question_count']}개 문항, worker {data['workers']}개)..."
+                        )
                     elif event == "batch_done":
+                        total_batches_ref[0] = data["total_batches"]
                         batch_done_count[0] += 1
                         progress_bar.progress(batch_done_count[0] / total_batches_ref[0])
-                        log_area.text(f"배치 {data['batch_index'] + 1}/{data['total_batches']} 완료 ({data['generated_count']}개 생성)")
+                        log_area.text(
+                            f"배치 {data['batch_index'] + 1}/{data['total_batches']} 완료 "
+                            f"({data['generated_count']}개 생성) · "
+                            f"{batch_done_count[0]}/{data['total_batches']} 완료"
+                        )
 
                 survey_ctx = _get_survey_context(df=df)
                 results = _run_title_generation(df, language, _title_cb, survey_context=survey_ctx)

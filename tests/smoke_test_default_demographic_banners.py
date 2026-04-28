@@ -2,6 +2,7 @@
 
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -71,6 +72,9 @@ assert [b.name for b in default_banners] == [
     "Age Group",
     "Income Level",
 ], [b.name for b in default_banners]
+assert all("기본 인구통계" in b.rationale for b in default_banners), [
+    b.rationale for b in default_banners
+]
 
 gender = default_banners[0]
 assert [p.condition for p in gender.points] == ["S1=1", "S1=2"]
@@ -117,5 +121,9 @@ merged = _merge_default_demographic_banners(
 assert [b.banner_id for b in merged] == ["A", "B", "C", "D"]
 assert [b.name for b in merged] == ["Gender", "Age Group", "Income Level", "Purchase Intent"]
 assert [p.point_id for p in merged[-1].points] == ["BP_D_1", "BP_D_2"]
+
+source = Path("services/table_guide_service.py").read_text(encoding="utf-8")
+assert "All `rationale` fields MUST be written in Korean" in source
+assert "rationale-style fields must be written in Korean" in source
 
 print("ALL DEFAULT DEMOGRAPHIC BANNER TESTS PASSED")

@@ -23,6 +23,13 @@ from models.survey import (
 from services.llm_client import (
     DEFAULT_MODEL, MODEL_TITLE_GENERATOR, call_llm, call_llm_json,
 )
+from services.spss_condition_service import (
+    condition_code_labels as _condition_code_labels,
+    condition_source_variables as _condition_source_variables,
+    condition_to_spss as _condition_to_spss,
+    format_spss_value as _format_spss_value,
+    parse_condition_parts as _parse_condition_parts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -473,7 +480,7 @@ If the user has specified a Client Brand or Study Objective, use these as author
   "banner_recommendations": [
     {
       "name": "Demographics",
-      "rationale": "Standard demographic cuts for profiling",
+      "rationale": "기본 프로파일링을 위한 인구통계 배너입니다.",
       "points": ["S1(Gender)", "S2(Age Group)"]
     }
   ]
@@ -792,21 +799,22 @@ The specific categories you create should be **tailored to the industry and stud
 5. **Think in terms of SEGMENTS, not questions**: "High-Intent EV Switchers" not "Q15 responses"
 6. **Each dimension should produce 3-6 breakpoints**, not binary splits. Binary splits (Yes/No) are acceptable only for naturally binary questions (e.g., Gender)
 7. **Attitudinal/behavioral questions are prime banner candidates** when their responses help explain variance in other study questions
+8. **All rationale-style fields must be written in Korean**: `perspective_rationale`, `business_rationale`, and any field named `rationale`.
 
 ## JSON Output Format
 {
   "cot_reasoning": {
-    "study_type": "Identified study type and rationale",
+    "study_type": "Identified study type and Korean rationale",
     "client_brand": "Identified or inferred client brand",
     "core_research_questions": ["Q1", "Q2", "Q3"],
     "client_decisions": "What decisions will the client make from this data?",
-    "perspective_rationale": "Why these specific perspectives were chosen over alternatives"
+    "perspective_rationale": "이 분석 관점을 선택한 이유를 한국어로 작성"
   },
   "analysis_strategy": "3-4 sentences: What is the core analytical story? What strategic questions will this banner framework answer?",
   "categories": [
     {
       "category_name": "Descriptive name for this analytical perspective",
-      "business_rationale": "What strategic question does this perspective answer?",
+      "business_rationale": "이 분석 관점이 답하는 전략적 질문을 한국어로 작성",
       "priority": "critical | important | supplementary",
       "banner_dimensions": [
         {
@@ -931,6 +939,7 @@ Analyze the questionnaire to produce a structured research brief that will guide
 - Dimensions must reference exact question numbers from the questionnaire.
 - The brief should be concise but complete — experts will rely on it exclusively.
 - Consider the study's industry context when identifying objectives and dimensions.
+- All `rationale` fields must be written in Korean.
 
 ## JSON Output Format
 {
@@ -952,7 +961,7 @@ Analyze the questionnaire to produce a structured research brief that will guide
           "name": "Dimension name",
           "candidate_questions": ["Q1"],
           "type": "simple or composite",
-          "rationale": "Why this dimension is needed for the objective"
+          "rationale": "이 차원이 해당 연구 목적에 필요한 이유를 한국어로 작성"
         }
       ]
     }
@@ -1046,7 +1055,7 @@ Independently analyze the Research Plan and questionnaire, then propose banner c
   "categories": [
     {
       "category_name": "Category name",
-      "business_rationale": "Why this category matters",
+      "business_rationale": "이 카테고리가 필요한 이유를 한국어로 작성",
       "priority": "critical|important|supplementary",
       "banner_dimensions": [
         {
@@ -1061,7 +1070,7 @@ Independently analyze the Research Plan and questionnaire, then propose banner c
     }
   ],
   "priority_rankings": [
-    {"dimension_name": "...", "score": 8, "rationale": "Why this score"}
+    {"dimension_name": "...", "score": 8, "rationale": "이 점수를 부여한 이유를 한국어로 작성"}
   ],
   "concerns": ["Issues or gaps identified"],
   "composite_proposals": [
@@ -1084,7 +1093,10 @@ For EVERY composite proposal, rate these 3 dimensions (1-10):
 - **Feasibility** (DP perspective): Can the combination actually be computed? Are filter conditions compatible?
 - **Uniqueness** (Research perspective): Does this reveal insights NOT visible in any single question?
 - **Business Impact** (Client perspective): Would this segment change the client's strategy?
-Only propose composites with average score >= 6."""
+Only propose composites with average score >= 6.
+
+## Language Rule
+All rationale-style fields must be written in Korean: `business_rationale`, priority ranking `rationale`, and any field named `rationale`."""
 
 
 _EXPERT_RESEARCH_DIRECTOR_SYSTEM = _EXPERT_COMMON_PREAMBLE + """
@@ -1323,6 +1335,7 @@ _SYNTHESIS_SYSTEM_PROMPT = """You are a senior Research Director synthesizing in
 - **At least 1** "deep" composite combining 3+ questions
 - Every primary research objective must have at least 1 dimension
 - Demographics should be <= 30% of total dimensions
+- All rationale-style fields must be written in Korean: `business_rationale`, `consensus_notes`, and any field named `rationale`.
 
 ## Output Format
 Produce an analysis plan in the EXACT format below. This will be passed directly to the banner design step.
@@ -1332,7 +1345,7 @@ Produce an analysis plan in the EXACT format below. This will be passed directly
   "categories": [
     {
       "category_name": "Category name (from Research Director)",
-      "business_rationale": "Strategic purpose",
+      "business_rationale": "이 카테고리의 전략적 목적을 한국어로 작성",
       "priority": "critical|important|supplementary",
       "banner_dimensions": [
         {
@@ -1490,7 +1503,7 @@ def _synthesize_expert_consensus(
                     for obj in research_plan.get("research_objectives", [])
                     if obj.get("priority") == "primary"
                 ],
-                "perspective_rationale": "Fallback: Research Director only",
+                "perspective_rationale": "합의 단계 실패로 Research Director 결과만 사용했습니다.",
             }
             return fallback
         return None
@@ -1562,6 +1575,7 @@ These are the MOST VALUABLE banners. They create strategic segments that don't e
 - **At least 4 composite banners** (banner_type: "composite")
 - **At least 2 composite banners must combine 3+ questions**
 - **category field MUST match** the analysis plan's category_name exactly
+- **All `rationale` fields MUST be written in Korean**, regardless of the output language setting.
 - Every category must have at least 2 banners
 - **Pure demographic dimensions should be ≤ 30% of total banners**
 - **Average values per banner should be ≥ 3** across the full set
@@ -1573,7 +1587,7 @@ These are the MOST VALUABLE banners. They create strategic segments that don't e
     {
       "category": "Brand Relationship",
       "name": "Brand Funnel Stage",
-      "rationale": "Identifies where in the awareness→consideration→purchase funnel the client is losing prospects to competitors",
+      "rationale": "인지-고려-보유 퍼널에서 고객 브랜드가 경쟁사 대비 어느 단계에서 이탈되는지 확인하기 위한 배너입니다.",
       "banner_type": "composite",
       "source_questions": ["A3", "D4", "SQ10"],
       "values": [
@@ -1779,6 +1793,7 @@ Return the CORRECTED banners in the same format, with an additional "warnings" f
 - If a banner has only 1 valid value after correction, remove the entire banner
 - Preserve all valid banners and values as-is
 - Only modify what needs fixing
+- Keep every `rationale` field in Korean. If a rationale is in another language, rewrite only that rationale in Korean.
 - PRESERVE the "category" field on each banner exactly as provided — do not remove or rename it"""
 
 
@@ -1853,6 +1868,7 @@ Demographics alone are NEVER sufficient. The majority of banners should come fro
 3. **Every banner value MUST have an explicit condition** using "QN=code" format.
 4. **At least 2 composite banners** combining 2+ questions with "&".
 5. **Pure demographic dimensions should be ≤ 30%** of total banners.
+6. **All `rationale` fields MUST be written in Korean**, regardless of the questionnaire or output language.
 
 ## What to EXCLUDE
 - **Screening/filter questions** used to terminate respondents
@@ -1880,7 +1896,7 @@ Demographics alone are NEVER sufficient. The majority of banners should come fro
     {
       "category": "Thematic group name you determined (e.g., Demographics, Ownership & Journey, Attitudes, etc.)",
       "name": "Banner name (the analytical dimension)",
-      "rationale": "1-2 sentence explanation of WHY this banner is analytically valuable",
+      "rationale": "이 배너가 분석적으로 필요한 이유를 한국어 1-2문장으로 작성",
       "source_questions": ["SQ1"],
       "values": [
         {"label": "Value label (short)", "condition": "SQ1=1"},
@@ -1898,7 +1914,7 @@ Demographics alone are NEVER sufficient. The majority of banners should come fro
     {
       "category": "Demographics",
       "name": "Gender",
-      "rationale": "Standard demographic cut to identify gender-based differences in brand metrics.",
+      "rationale": "브랜드 지표의 성별 차이를 확인하기 위한 기본 인구통계 배너입니다.",
       "source_questions": ["SQ1"],
       "values": [
         {"label": "Male", "condition": "SQ1=1"},
@@ -1908,7 +1924,7 @@ Demographics alone are NEVER sufficient. The majority of banners should come fro
     {
       "category": "Demographics",
       "name": "Age Group",
-      "rationale": "Generational segmentation reveals different brand consideration sets.",
+      "rationale": "연령대별 브랜드 고려 및 태도 차이를 확인하기 위한 기본 인구통계 배너입니다.",
       "source_questions": ["SQ2"],
       "values": [
         {"label": "18-29", "condition": "SQ2=1,2"},
@@ -1919,7 +1935,7 @@ Demographics alone are NEVER sufficient. The majority of banners should come fro
     {
       "category": "Ownership & Usage",
       "name": "Ownership Segment",
-      "rationale": "Client brand owners vs competitors reveals satisfaction drivers and switching barriers.",
+      "rationale": "고객 브랜드 보유자와 경쟁 브랜드 보유자의 만족 요인 및 전환 장벽을 비교하기 위한 배너입니다.",
       "source_questions": ["SQ5", "SQ6"],
       "values": [
         {"label": "Client Brand Owner", "condition": "SQ6=1"},
@@ -1931,7 +1947,7 @@ Demographics alone are NEVER sufficient. The majority of banners should come fro
     {
       "category": "Attitudes & Evaluation",
       "name": "Overall Satisfaction",
-      "rationale": "Satisfaction tiers reveal which segments need retention vs growth strategies.",
+      "rationale": "만족도 수준별로 유지 전략과 성장 기회가 필요한 세그먼트를 구분하기 위한 배너입니다.",
       "source_questions": ["Q15"],
       "values": [
         {"label": "Satisfied (Top2)", "condition": "Q15=1,2"},
@@ -1942,7 +1958,7 @@ Demographics alone are NEVER sufficient. The majority of banners should come fro
     {
       "category": "Attitudes & Evaluation",
       "name": "Purchase Intent",
-      "rationale": "Intent levels help prioritize acquisition targets and messaging.",
+      "rationale": "구매의향 수준별로 타깃 우선순위와 메시지 전략을 구분하기 위한 배너입니다.",
       "source_questions": ["SQ11"],
       "values": [
         {"label": "High Intent (Top2)", "condition": "SQ11=1,2"},
@@ -1953,7 +1969,7 @@ Demographics alone are NEVER sufficient. The majority of banners should come fro
     {
       "category": "Composite Segments",
       "name": "Brand Loyalty Segment",
-      "rationale": "Combining ownership and intent reveals retention vs conquest priorities.",
+      "rationale": "보유 여부와 구매의향을 결합해 유지 대상과 전환 공략 대상을 구분하기 위한 복합 배너입니다.",
       "banner_type": "composite",
       "source_questions": ["SQ6", "SQ11"],
       "values": [
@@ -1982,28 +1998,28 @@ _DEFAULT_DEMO_CONFIG = {
         "name": {"ko": "성별", "en": "Gender"},
         "rationale": {
             "ko": "기본 인구통계 분석 축입니다. 주요 결과를 성별로 비교할 수 있도록 포함합니다.",
-            "en": "Default demographic analysis cut for comparing key results by gender.",
+            "en": "기본 인구통계 분석 축입니다. 주요 결과를 성별로 비교할 수 있도록 포함합니다.",
         },
     },
     "age": {
         "name": {"ko": "연령대", "en": "Age Group"},
         "rationale": {
             "ko": "기본 인구통계 분석 축입니다. 주요 결과를 연령대별로 비교할 수 있도록 포함합니다.",
-            "en": "Default demographic analysis cut for comparing key results by age group.",
+            "en": "기본 인구통계 분석 축입니다. 주요 결과를 연령대별로 비교할 수 있도록 포함합니다.",
         },
     },
     "income": {
         "name": {"ko": "소득수준", "en": "Income Level"},
         "rationale": {
             "ko": "기본 인구통계 분석 축입니다. 가격, 구매의향, 태도 결과를 소득수준별로 비교할 수 있도록 포함합니다.",
-            "en": "Default demographic analysis cut for comparing price, intent, and attitude metrics by income level.",
+            "en": "기본 인구통계 분석 축입니다. 가격, 구매의향, 태도 결과를 소득수준별로 비교할 수 있도록 포함합니다.",
         },
     },
     "region": {
         "name": {"ko": "지역", "en": "Region"},
         "rationale": {
             "ko": "기본 인구통계 분석 축입니다. 주요 결과를 지역별로 비교할 수 있도록 포함합니다.",
-            "en": "Default demographic analysis cut for comparing key results by region.",
+            "en": "기본 인구통계 분석 축입니다. 주요 결과를 지역별로 비교할 수 있도록 포함합니다.",
         },
     },
 }
@@ -3637,6 +3653,7 @@ def compile_table_guide(doc: SurveyDocument, project_name: str = "",
     for q in doc.questions:
         rows.append({
             "QuestionNumber": q.question_number,
+            "SourceVariable": getattr(q, "source_variable", "") or q.question_number,
             "TableNumber": q.table_number,
             "QuestionText": q.question_text,
             "TableTitle": q.table_title,
@@ -3661,9 +3678,6 @@ def compile_table_guide(doc: SurveyDocument, project_name: str = "",
     )
 
 
-_NEGATIVE_CONDITION_RE = re.compile(r"(!=|<>|≠|\bNOT\b)", re.IGNORECASE)
-
-
 def _unique_questions(survey_doc: SurveyDocument) -> List[SurveyQuestion]:
     seen = set()
     questions = []
@@ -3684,6 +3698,19 @@ def _build_question_lookup(survey_doc: SurveyDocument) -> tuple[dict, dict]:
     return by_qn, by_row_key
 
 
+def _question_source_variable(q: SurveyQuestion | None, fallback: str = "") -> str:
+    if not q:
+        return fallback
+    return getattr(q, "source_variable", "") or q.question_number or fallback
+
+
+def _build_source_variable_map(survey_doc: SurveyDocument) -> dict[str, str]:
+    return {
+        q.question_number: _question_source_variable(q)
+        for q in _unique_questions(survey_doc)
+    }
+
+
 def _build_code_label_map(survey_doc: SurveyDocument) -> dict[str, dict[str, str]]:
     code_map = {}
     for q in _unique_questions(survey_doc):
@@ -3699,73 +3726,6 @@ def _split_banner_ids_value(value: str) -> list[str]:
     if not value or not str(value).strip():
         return []
     return [part.strip() for part in str(value).split(",") if part.strip()]
-
-
-def _parse_condition_parts(condition: str) -> tuple[list[tuple[str, list[str]]], list[str]]:
-    """Parse Q1=1,2&Q2=3 style conditions into question/code parts."""
-    condition = str(condition or "").strip()
-    if not condition:
-        return [], ["Missing banner condition"]
-
-    warnings = []
-    if _NEGATIVE_CONDITION_RE.search(condition):
-        warnings.append("Negative condition is not SPSS-ready; convert to positive code list")
-
-    parsed = []
-    for raw_part in condition.split("&"):
-        part = raw_part.strip().strip("()")
-        if not part:
-            continue
-        if "=" not in part:
-            warnings.append(f"Invalid condition part: {part}")
-            continue
-        qn, raw_codes = part.split("=", 1)
-        qn = qn.strip()
-        codes = [
-            code.strip().strip("'\"")
-            for code in raw_codes.split(",")
-            if code.strip().strip("'\"")
-        ]
-        if not qn or not codes:
-            warnings.append(f"Invalid condition part: {part}")
-            continue
-        parsed.append((qn, codes))
-
-    if not parsed:
-        warnings.append("No executable condition parts found")
-
-    return parsed, warnings
-
-
-def _format_spss_value(code: str) -> str:
-    code = str(code).strip()
-    if re.fullmatch(r"-?\d+(?:\.\d+)?", code):
-        return code
-    escaped = code.replace("'", "''")
-    return f"'{escaped}'"
-
-
-def _condition_to_spss(condition: str) -> str:
-    parts, _ = _parse_condition_parts(condition)
-    clauses = []
-    for qn, codes in parts:
-        if len(codes) == 1:
-            clauses.append(f"{qn} = {_format_spss_value(codes[0])}")
-        else:
-            ors = " OR ".join(f"{qn} = {_format_spss_value(code)}" for code in codes)
-            clauses.append(f"({ors})")
-    return " AND ".join(clauses)
-
-
-def _condition_code_labels(condition: str, code_label_map: dict[str, dict[str, str]]) -> str:
-    parts, _ = _parse_condition_parts(condition)
-    labels = []
-    for qn, codes in parts:
-        q_labels = code_label_map.get(qn, {})
-        for code in codes:
-            label = q_labels.get(code, "")
-            labels.append(f"{qn} {code}={label}" if label else f"{qn} {code}")
-    return " | ".join(labels)
 
 
 def _condition_signature(condition: str) -> dict[str, set[str]]:
@@ -3889,6 +3849,58 @@ def _dp_status(warnings: list[str]) -> str:
     return "Needs Researcher Review" if warnings else "Ready for DP"
 
 
+def build_dp_handoff_validation_summary(
+    tg_doc: TableGuideDocument,
+    survey_doc: SurveyDocument,
+) -> dict:
+    """Return DP handoff validation counts for UI and export QA."""
+    question_lookup, row_lookup = _build_question_lookup(survey_doc)
+    banner_lookup = {b.banner_id: b for b in tg_doc.banners}
+
+    table_total = 0
+    table_review = 0
+    warnings: list[str] = []
+    for row in tg_doc.rows:
+        table_total += 1
+        qn = str(row.get("QuestionNumber", "")).strip()
+        row_key = f"{qn}_{row.get('TableNumber', '')}"
+        q = row_lookup.get(row_key) or question_lookup.get(qn)
+        row_warnings = _validate_table_guide_row_for_dp(
+            row,
+            q,
+            _split_banner_ids_value(row.get("BannerIDs", "")),
+            banner_lookup,
+            question_lookup,
+        )
+        if row_warnings:
+            table_review += 1
+            warnings.append(f"{qn}: {' | '.join(row_warnings)}")
+
+    banner_warnings = _validate_banner_spec_for_dp(tg_doc.banners, survey_doc)
+    banner_total = 0
+    banner_review = 0
+    for banner in tg_doc.banners:
+        for idx, pt in enumerate(banner.points, 1):
+            banner_total += 1
+            point_warnings = banner_warnings.get((banner.banner_id, pt.point_id, idx), [])
+            if point_warnings:
+                banner_review += 1
+                warnings.append(
+                    f"Banner {banner.banner_id}/{idx} {pt.label}: {' | '.join(point_warnings)}"
+                )
+
+    return {
+        "table_total": table_total,
+        "table_ready": table_total - table_review,
+        "table_review": table_review,
+        "banner_total": banner_total,
+        "banner_ready": banner_total - banner_review,
+        "banner_review": banner_review,
+        "total_review": table_review + banner_review,
+        "warnings": warnings[:20],
+    }
+
+
 def _style_dp_sheet(ws, widths: list[int]) -> None:
     header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
     header_font = Font(color="FFFFFF", bold=True, size=10)
@@ -3926,6 +3938,7 @@ def export_dp_handoff_excel(tg_doc: TableGuideDocument,
 
     question_lookup, row_lookup = _build_question_lookup(survey_doc)
     code_label_map = _build_code_label_map(survey_doc)
+    source_var_map = _build_source_variable_map(survey_doc)
     banner_lookup = {b.banner_id: b for b in tg_doc.banners}
     grammar_lookup = {
         f"{q.question_number}_{q.table_number}": q.grammar_checked
@@ -3969,7 +3982,7 @@ def export_dp_handoff_excel(tg_doc: TableGuideDocument,
             row.get("Sort", ""),
             row.get("TableNumber", ""),
             qn,
-            qn,
+            row.get("SourceVariable", "") or _question_source_variable(q, qn),
             row.get("QuestionText", ""),
             row.get("TableTitle", ""),
             row.get("QuestionType", ""),
@@ -4001,7 +4014,7 @@ def export_dp_handoff_excel(tg_doc: TableGuideDocument,
         "HumanCondition",
         "SPSSCondition",
         "CodeLabels",
-        "Rationale",
+        "Rationale(KO)",
         "IsNet",
         "NetDefinition",
     ]
@@ -4022,9 +4035,9 @@ def export_dp_handoff_excel(tg_doc: TableGuideDocument,
                 idx,
                 pt.label,
                 pt.source_question,
-                pt.source_question,
+                _condition_source_variables(pt.condition, source_var_map) or pt.source_question,
                 pt.condition,
-                _condition_to_spss(pt.condition),
+                _condition_to_spss(pt.condition, source_var_map),
                 _condition_code_labels(pt.condition, code_label_map),
                 banner.rationale or "",
                 "Yes" if pt.is_net else "No",
@@ -4055,6 +4068,10 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
     header_font = Font(color="FFFFFF", bold=True, size=10)
     wrap_align = Alignment(wrap_text=True, vertical='top')
     center_align = Alignment(horizontal='center', vertical='center')
+    question_lookup, row_lookup = _build_question_lookup(survey_doc)
+    code_label_map = _build_code_label_map(survey_doc)
+    source_var_map = _build_source_variable_map(survey_doc)
+    banner_lookup = {b.banner_id: b for b in tg_doc.banners}
 
     def _style_header(ws):
         for cell in ws[1]:
@@ -4074,6 +4091,23 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
     ws_cover.append(["Language", tg_doc.language])
     ws_cover.append(["Total Questions", len(tg_doc.rows)])
     ws_cover.append(["Banners", len(tg_doc.banners)])
+
+    readiness = build_dp_handoff_validation_summary(tg_doc, survey_doc)
+    ws_cover.append([])
+    ws_cover.append(["DP Handoff Readiness"])
+    ws_cover[ws_cover.max_row][0].font = Font(size=14, bold=True)
+    ws_cover.append([
+        "Table Guide",
+        f"{readiness['table_ready']} ready / {readiness['table_review']} review "
+        f"(total {readiness['table_total']})",
+    ])
+    ws_cover.append([
+        "Banner Spec",
+        f"{readiness['banner_ready']} ready / {readiness['banner_review']} review "
+        f"(total {readiness['banner_total']})",
+    ])
+    if readiness["warnings"]:
+        ws_cover.append(["Review Items", " | ".join(readiness["warnings"][:8])])
 
     # Survey Intelligence 요약
     intel = intelligence or (survey_doc.survey_intelligence if survey_doc else None)
@@ -4109,10 +4143,10 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
     # ── Sheet 2: Table Guide ──
     ws_tg = wb.create_sheet("Table Guide")
     tg_headers = [
-        "Sort", "QuestionNumber", "TableNumber", "QuestionText",
-        "TableTitle", "SubBanner", "QuestionType", "SummaryType",
-        "NetRecode", "BannerIDs", "BannerNames", "SpecialInstructions",
-        "Filter", "GrammarChecker",
+        "ReviewStatus", "QAWarning", "Sort", "QuestionNumber", "SourceVariable",
+        "TableNumber", "QuestionText", "TableTitle", "SubBanner", "QuestionType",
+        "SummaryType", "NetRecode", "BannerIDs", "BannerNames",
+        "SpecialInstructions", "Filter", "AnswerOptions", "GrammarChecker",
     ]
     ws_tg.append(tg_headers)
     _style_header(ws_tg)
@@ -4126,9 +4160,20 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
         key = row["QuestionNumber"] + "_" + row["TableNumber"]
         gc = qn_grammar.get(key, "")
         banner_ids_val = row.get("BannerIDs", "")
+        q = row_lookup.get(key) or question_lookup.get(row.get("QuestionNumber", ""))
+        warnings = _validate_table_guide_row_for_dp(
+            row,
+            q,
+            _split_banner_ids_value(banner_ids_val),
+            banner_lookup,
+            question_lookup,
+        )
         ws_tg.append([
+            _dp_status(warnings),
+            " | ".join(warnings),
             row.get("Sort", ""),
             row.get("QuestionNumber", ""),
+            row.get("SourceVariable", "") or _question_source_variable(q, row.get("QuestionNumber", "")),
             row.get("TableNumber", ""),
             row.get("QuestionText", ""),
             row.get("TableTitle", ""),
@@ -4140,6 +4185,7 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
             expand_banner_ids(banner_ids_val, tg_doc.banners),
             row.get("SpecialInstructions", ""),
             row.get("Filter", ""),
+            row.get("AnswerOptions", ""),
             gc,
         ])
 
@@ -4147,33 +4193,47 @@ def export_table_guide_excel(tg_doc: TableGuideDocument,
         for cell in row:
             cell.alignment = wrap_align
 
-    tg_col_widths = [20, 12, 15, 12, 50, 35, 20, 12, 25, 30, 12, 40, 35, 30, 35]
+    tg_col_widths = [22, 42, 16, 14, 18, 14, 50, 40, 30, 16, 14, 34, 20, 34, 38, 34, 48, 30]
     for i, w in enumerate(tg_col_widths, 1):
         ws_tg.column_dimensions[get_column_letter(i)].width = w
 
     # ── Sheet 3: Banner Spec (데이터 있을 때만) ──
     if tg_doc.banners:
         ws_banner = wb.create_sheet("Banner Spec")
-        ws_banner.append(["Category", "BannerID", "BannerName", "PointLabel",
-                           "SourceQuestion", "Condition", "IsNet", "NetDefinition"])
+        ws_banner.append([
+            "ReviewStatus", "QAWarning", "Category", "BannerID", "BannerName",
+            "BannerType", "BannerValueNo", "PointLabel", "SourceQuestion",
+            "SourceVariable", "HumanCondition", "SPSSCondition", "CodeLabels",
+            "Rationale(KO)", "IsNet", "NetDefinition",
+        ])
         _style_header(ws_banner)
 
+        banner_warnings = _validate_banner_spec_for_dp(tg_doc.banners, survey_doc)
         for banner in tg_doc.banners:
-            for pt in banner.points:
+            for idx, pt in enumerate(banner.points, 1):
+                warnings = banner_warnings.get((banner.banner_id, pt.point_id, idx), [])
                 ws_banner.append([
+                    _dp_status(warnings),
+                    " | ".join(warnings),
                     banner.category or "",
                     banner.banner_id,
                     banner.name,
+                    banner.banner_type or "simple",
+                    idx,
                     pt.label,
                     pt.source_question,
+                    _condition_source_variables(pt.condition, source_var_map) or pt.source_question,
                     pt.condition,
+                    _condition_to_spss(pt.condition, source_var_map),
+                    _condition_code_labels(pt.condition, code_label_map),
+                    banner.rationale or "",
                     "Yes" if pt.is_net else "No",
                     pt.net_definition,
                 ])
 
-        banner_col_widths = {'A': 20, 'B': 12, 'C': 22, 'D': 25, 'E': 18, 'F': 30, 'G': 8, 'H': 25}
-        for col_letter, w in banner_col_widths.items():
-            ws_banner.column_dimensions[col_letter].width = w
+        banner_col_widths = [22, 44, 22, 12, 28, 14, 14, 28, 20, 20, 32, 48, 46, 50, 10, 28]
+        for i, w in enumerate(banner_col_widths, 1):
+            ws_banner.column_dimensions[get_column_letter(i)].width = w
 
     # ── Sheet 3b: Banner Cross-Tab Layout (DP용, 가로 펼침) ──
     if tg_doc.banners:

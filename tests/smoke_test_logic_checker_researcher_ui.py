@@ -17,6 +17,7 @@ from services.checklist_generator import generate_checklist
 from services.path_simulator import generate_persona_scenarios, simulate_paths
 from services.prescripting_checker import run_algorithmic_checks
 from services.skip_logic_service import build_skip_logic_graph
+from services.skip_logic_service import parse_target
 
 
 questions = [
@@ -92,5 +93,44 @@ assert wb.sheetnames == [
 ]
 assert "업무 구분" in [cell.value for cell in wb["Checklist"][1]]
 assert "Script 구현 확인" in [row[0] for row in wb["Summary"].iter_rows(min_row=2, max_col=1, values_only=True)]
+
+assert parse_target("END") == "END"
+assert parse_target("Go to END") == "END"
+assert parse_target("End of survey") == "END"
+assert parse_target("Go to end of section 5") is None
+assert parse_target("Read until the end") is None
+assert parse_target("by the end of the day") is None
+branch_questions = [
+    SurveyQuestion(
+        question_number="S1",
+        question_text="Screening age",
+        question_type="SA",
+        answer_options=[AnswerOption("1", "Under 18"), AnswerOption("2", "18+")],
+        skip_logic=[SkipLogic(condition="S1=1", target="END")],
+    ),
+    SurveyQuestion(
+        question_number="Q1",
+        question_text="Own a TV?",
+        question_type="SA",
+        answer_options=[AnswerOption("1", "Yes"), AnswerOption("2", "No")],
+        skip_logic=[SkipLogic(condition="Q1=2", target="Q3")],
+    ),
+    SurveyQuestion(
+        question_number="Q2",
+        question_text="Main TV brand",
+        question_type="SA",
+        answer_options=[AnswerOption("1", "Samsung"), AnswerOption("2", "LG")],
+    ),
+    SurveyQuestion(
+        question_number="Q3",
+        question_text="Purchase intent",
+        question_type="SA",
+        answer_options=[AnswerOption("1", "High"), AnswerOption("2", "Low")],
+    ),
+]
+branch_result = simulate_paths(branch_questions)
+assert branch_result.total_skip_rules == 2
+assert len(branch_result.test_scenarios) == 2
+assert branch_result.branch_coverage_percent == 100.0
 
 print("ALL LOGIC CHECKER RESEARCHER UI TESTS PASSED")

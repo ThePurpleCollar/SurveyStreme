@@ -24,7 +24,11 @@ _TARGET_QN_PATTERN = re.compile(
 
 # 종료 패턴
 _END_PATTERNS = re.compile(
-    r'종료|terminate|end\s*(survey|interview|questionnaire)|screen\s*out|탈락',
+    r'종료|terminate|screen\s*out|탈락|'
+    r'^\s*end\s*$|'
+    r'\b(?:go\s+to|skip\s+to|jump\s+to)\s*end\s*$|'
+    r'->\s*end\s*$|'
+    r'\bend\s+(?:of\s+)?(?:survey|interview|questionnaire|study)\b',
     re.IGNORECASE,
 )
 

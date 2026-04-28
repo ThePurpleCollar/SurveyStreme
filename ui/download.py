@@ -6,9 +6,35 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from models.survey import SurveyDocument
+from services.spss_condition_service import (
+    condition_code_labels as _condition_code_labels,
+    condition_source_variables as _condition_source_variables,
+    condition_to_spss as _condition_to_spss,
+)
 
 
-EXCEL_EXPORT_CACHE_VERSION = "questionnaire-excel-v1"
+EXCEL_EXPORT_CACHE_VERSION = "questionnaire-excel-v2"
+
+
+def _source_variable_map(survey_doc: SurveyDocument) -> dict[str, str]:
+    return {
+        q.question_number: (getattr(q, "source_variable", "") or q.question_number)
+        for q in survey_doc.questions
+        if q.question_number
+    }
+
+
+def _code_label_map(survey_doc: SurveyDocument) -> dict[str, dict[str, str]]:
+    code_map = {}
+    for q in survey_doc.questions:
+        if q.question_number in code_map:
+            continue
+        code_map[q.question_number] = {
+            str(opt.code).strip(): str(opt.label).strip()
+            for opt in q.answer_options
+            if str(opt.code).strip()
+        }
+    return code_map
 
 
 def df_for_download(processed_df):
@@ -19,9 +45,16 @@ def df_for_download(processed_df):
                  'ReviewStatus', 'ReviewNotes']:
         if col not in processed_df.columns:
             processed_df[col] = ''
+    if 'SourceVariable' not in processed_df.columns:
+        processed_df['SourceVariable'] = processed_df.get('QuestionNumber', '')
+    else:
+        processed_df['SourceVariable'] = processed_df['SourceVariable'].fillna('')
+        missing_source = processed_df['SourceVariable'].astype(str).str.strip() == ''
+        if 'QuestionNumber' in processed_df.columns:
+            processed_df.loc[missing_source, 'SourceVariable'] = processed_df.loc[missing_source, 'QuestionNumber']
 
     # 컬럼 순서: Sort, QN, TN, QText, Title, SubBanner, QType, SType, NetRecode, BannerIDs, SpecialInstructions, Other, GrammarChecker
-    base_columns = ['ReviewStatus', 'Sort', 'QuestionNumber', 'TableNumber', 'QuestionText',
+    base_columns = ['ReviewStatus', 'Sort', 'QuestionNumber', 'SourceVariable', 'TableNumber', 'QuestionText',
                     'TableTitle', 'SubBanner', 'QuestionType', 'SummaryType',
                     'NetRecode', 'BannerIDs', 'SpecialInstructions', 'Other',
                     'GrammarChecker', 'ReviewNotes']
@@ -44,13 +77,15 @@ def prepare_excel_download(survey_doc) -> bytes:
     header_fill = PatternFill(start_color="0033A0", end_color="0033A0", fill_type="solid")
     header_font = Font(color="FFFFFF", bold=True, size=10)
     center_align = Alignment(horizontal='center', vertical='center')
+    source_var_map = _source_variable_map(survey_doc)
+    code_label_map = _code_label_map(survey_doc)
 
     # ── Sheet 1: Questions ──
     ws_main = wb.active
     ws_main.title = "Questions"
 
     headers = [
-        "Sort", "QuestionNumber", "TableNumber", "QuestionText",
+        "Sort", "QuestionNumber", "SourceVariable", "TableNumber", "QuestionText",
         "TableTitle", "SubBanner", "QuestionType", "SummaryType",
         "NetRecode", "BannerIDs", "SpecialInstructions",
         "AnswerOptions", "SkipLogic", "Filter",
@@ -67,6 +102,7 @@ def prepare_excel_download(survey_doc) -> bytes:
         ws_main.append([
             q.sort_order,
             q.question_number,
+            getattr(q, "source_variable", "") or q.question_number,
             q.table_number,
             q.question_text,
             q.table_title,
@@ -89,13 +125,15 @@ def prepare_excel_download(survey_doc) -> bytes:
         for cell in row:
             cell.alignment = Alignment(wrap_text=True, vertical='top')
 
-    col_widths = [12, 15, 12, 50, 35, 20, 12, 25, 30, 12, 35, 40, 30, 25, 20, 25, 15, 30]
+    col_widths = [12, 15, 18, 12, 50, 35, 20, 12, 25, 30, 12, 35, 40, 30, 25, 20, 25, 15, 30]
     for i, width in enumerate(col_widths, 1):
         ws_main.column_dimensions[get_column_letter(i)].width = width
+    ws_main.freeze_panes = "A2"
+    ws_main.auto_filter.ref = ws_main.dimensions
 
     # ── Sheet 2: Answer Options ──
     ws_opts = wb.create_sheet("AnswerOptions")
-    ws_opts.append(["QuestionNumber", "OptionCode", "OptionLabel"])
+    ws_opts.append(["QuestionNumber", "SourceVariable", "OptionCode", "OptionLabel"])
 
     for cell in ws_opts[1]:
         cell.fill = header_fill
@@ -104,17 +142,27 @@ def prepare_excel_download(survey_doc) -> bytes:
 
     for q in survey_doc.questions:
         for opt in q.answer_options:
-            ws_opts.append([q.question_number, opt.code, opt.label])
+            ws_opts.append([
+                q.question_number,
+                getattr(q, "source_variable", "") or q.question_number,
+                opt.code,
+                opt.label,
+            ])
 
     ws_opts.column_dimensions['A'].width = 18
-    ws_opts.column_dimensions['B'].width = 12
-    ws_opts.column_dimensions['C'].width = 50
+    ws_opts.column_dimensions['B'].width = 18
+    ws_opts.column_dimensions['C'].width = 12
+    ws_opts.column_dimensions['D'].width = 50
+    ws_opts.freeze_panes = "A2"
+    ws_opts.auto_filter.ref = ws_opts.dimensions
 
     # ── Sheet 3: Banner Spec (있을 경우) ──
     if hasattr(survey_doc, 'banners') and survey_doc.banners:
         ws_banner = wb.create_sheet("Banner Spec")
-        ws_banner.append(["BannerID", "BannerName", "PointID", "PointLabel",
-                          "SourceQuestion", "Condition", "IsNet", "NetDefinition"])
+        ws_banner.append(["Category", "BannerID", "BannerName", "BannerType",
+                          "PointID", "PointLabel", "SourceQuestion", "Condition",
+                          "SourceVariable", "SPSSCondition", "CodeLabels",
+                          "Rationale(KO)", "IsNet", "NetDefinition"])
 
         for cell in ws_banner[1]:
             cell.fill = header_fill
@@ -124,18 +172,26 @@ def prepare_excel_download(survey_doc) -> bytes:
         for banner in survey_doc.banners:
             for pt in banner.points:
                 ws_banner.append([
+                    getattr(banner, "category", "") or "",
                     banner.banner_id,
                     banner.name,
+                    getattr(banner, "banner_type", "simple"),
                     pt.point_id,
                     pt.label,
                     pt.source_question,
                     pt.condition,
+                    _condition_source_variables(pt.condition, source_var_map) or pt.source_question,
+                    _condition_to_spss(pt.condition, source_var_map),
+                    _condition_code_labels(pt.condition, code_label_map),
+                    getattr(banner, "rationale", ""),
                     "Yes" if pt.is_net else "No",
                     pt.net_definition,
                 ])
 
-        for col_letter in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
-            ws_banner.column_dimensions[col_letter].width = 18
+        for i, width in enumerate([20, 12, 28, 14, 16, 28, 20, 32, 20, 48, 46, 50, 10, 28], 1):
+            ws_banner.column_dimensions[get_column_letter(i)].width = width
+        ws_banner.freeze_panes = "A2"
+        ws_banner.auto_filter.ref = ws_banner.dimensions
 
     # ── Sheet 3b: Banner Layout (가로 Cross-Tab, DP용) ──
     if hasattr(survey_doc, 'banners') and survey_doc.banners:
@@ -189,6 +245,7 @@ def prepare_excel_download(survey_doc) -> bytes:
 
         for i in range(1, col):
             ws_xtab.column_dimensions[get_column_letter(i)].width = 15
+        ws_xtab.freeze_panes = "A4"
 
     # ── Sheet 4: Net/Recode Spec (있을 경우) ──
     seen_qn = set()
@@ -200,7 +257,7 @@ def prepare_excel_download(survey_doc) -> bytes:
 
     if has_net:
         ws_net = wb.create_sheet("Net Recode Spec")
-        ws_net.append(["QuestionNumber", "QuestionType", "NetRecode"])
+        ws_net.append(["QuestionNumber", "SourceVariable", "QuestionType", "NetRecode"])
 
         for cell in ws_net[1]:
             cell.fill = header_fill
@@ -213,11 +270,19 @@ def prepare_excel_download(survey_doc) -> bytes:
                 continue
             seen_qn.add(q.question_number)
             if q.net_recode:
-                ws_net.append([q.question_number, q.question_type or "", q.net_recode])
+                ws_net.append([
+                    q.question_number,
+                    getattr(q, "source_variable", "") or q.question_number,
+                    q.question_type or "",
+                    q.net_recode,
+                ])
 
         ws_net.column_dimensions['A'].width = 18
-        ws_net.column_dimensions['B'].width = 15
-        ws_net.column_dimensions['C'].width = 50
+        ws_net.column_dimensions['B'].width = 18
+        ws_net.column_dimensions['C'].width = 15
+        ws_net.column_dimensions['D'].width = 50
+        ws_net.freeze_panes = "A2"
+        ws_net.auto_filter.ref = ws_net.dimensions
 
     # 바이트로 변환
     buffer = io.BytesIO()

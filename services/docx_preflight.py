@@ -91,10 +91,13 @@ def _score_from_issues(base: int, issues: List[PreflightIssue]) -> int:
     return max(0, min(100, base - penalty))
 
 
-def check_docx_preflight(sections: List[DocxSection]) -> PreflightReport:
+def check_docx_preflight(
+    sections: List[DocxSection],
+    annotated_text: str | None = None,
+) -> PreflightReport:
     """Return a deterministic readiness report from parsed DOCX sections."""
     paragraphs, tables = _collect_content(sections)
-    annotated = render_sections_to_annotated_text(sections)
+    annotated = annotated_text if annotated_text is not None else render_sections_to_annotated_text(sections)
     candidates = regex_pre_extract(annotated)
 
     typed_candidates = 0

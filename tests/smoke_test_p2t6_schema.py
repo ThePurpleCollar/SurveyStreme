@@ -12,6 +12,7 @@ print("Test 1: RENDERING MARKERS 섹션 OK")
 
 # Test 2: sub_items in OUTPUT 스키마
 assert '"sub_items"' in SYSTEM_PROMPT
+assert "**source_variable**" in SYSTEM_PROMPT
 print("Test 2: sub_items in SYSTEM_PROMPT OK")
 
 # Test 3: programming_guide in OUTPUT 스키마
@@ -23,6 +24,7 @@ print("Test 3: programming_guide in SYSTEM_PROMPT OK")
 # Test 4: from_llm_dict sub_items + programming_guide
 llm_response = {
     "question_number": "Q5",
+    "source_variable": "Q5_1",
     "question_text": "브랜드 평가",
     "question_type": "5pt x 3",
     "answer_options": [{"code": "1", "label": "전혀 아님"}, {"code": "5", "label": "매우 그러함"}],
@@ -40,6 +42,7 @@ llm_response = {
 }
 q = SurveyQuestion.from_llm_dict(llm_response)
 assert q.sub_items == ["브랜드 인지도", "구매 의향", "재구매 의향"]
+assert q.source_variable == "Q5_1"
 assert q.programming_guide is not None
 assert q.programming_guide.rotate_options == True
 print("Test 4: from_llm_dict sub_items + programming_guide OK")

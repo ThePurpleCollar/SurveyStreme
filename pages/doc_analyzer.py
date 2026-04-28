@@ -22,7 +22,7 @@ from ui.tree_view import render_tree_view
 from ui.spreadsheet import apply_spreadsheet_edits_to_document, render_spreadsheet_view
 
 
-DOCX_STRUCTURE_CACHE_VERSION = "docx-structure-v2"
+DOCX_STRUCTURE_CACHE_VERSION = "docx-structure-v3"
 
 
 def _hash_bytes(data: bytes) -> str:
@@ -38,7 +38,8 @@ def _parse_and_chunk_docx_cached(
     """Parse and chunk a DOCX once per file content and parser version."""
     sections = parse_docx(io.BytesIO(file_bytes))
     chunks = chunk_sections(sections)
-    return sections, chunks
+    preflight = check_docx_preflight(sections, annotated_text="\n\n".join(chunks))
+    return sections, chunks, preflight
 
 
 def page_document_processing(uploaded_file, client=None):
@@ -114,7 +115,7 @@ def _process_docx(uploaded_file, client):
         # Phase 1: DOCX 파싱
         phase_line.write("DOCX 구조를 분석하고 있습니다 (스타일, 목록, 표)...")
         try:
-            sections, chunks = _parse_and_chunk_docx_cached(
+            sections, chunks, preflight = _parse_and_chunk_docx_cached(
                 file_bytes,
                 uploaded_file.name,
                 DOCX_STRUCTURE_CACHE_VERSION,
@@ -131,7 +132,6 @@ def _process_docx(uploaded_file, client):
 
         total_paragraphs = sum(len(s.paragraphs) for s in sections)
         total_tables = sum(len(s.tables) for s in sections)
-        preflight = check_docx_preflight(sections)
         phase_line.write(f"✅ 파싱 완료: {len(sections)}개 섹션, "
                          f"{total_paragraphs}개 단락, {total_tables}개 표")
 

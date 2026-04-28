@@ -1,350 +1,340 @@
-import os
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
-EXAMPLE_TEMPLATE_PATH = "template/SurveyStream_QnrTemplate_v1.docx"
+
+def _table(rows: list[dict]):
+    st.table(pd.DataFrame(rows))
+
+
+def _step(number: int, title: str, body: str):
+    st.markdown(f"### {number}. {title}")
+    st.markdown(body)
 
 
 def page_user_reference():
-    st.title('Survey Stream 사용자 가이드')
+    st.title("도움말 & 사용자 가이드")
+    st.caption("현재 구현된 Streamlit 앱 기준의 사용자 워크플로우입니다.")
 
-    # 상단에 간단한 소개 카드
-    st.markdown("""
-        <div style="padding: 15px; border-radius: 10px; background-color: #e0f7fa; margin-bottom: 20px; border-left: 5px solid #08c7b4;">
-        <h3 style="margin-top: 0;">Survey Stream에 오신 것을 환영합니다</h3>
-        <p>이 가이드는 Survey Stream의 주요 기능과 사용 방법을 상세히 설명합니다.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.info(
+        "Survey Stream은 연구원이 DOCX 설문지를 업로드해 문항을 추출하고, "
+        "Table Guide/Banner Spec을 만든 뒤, DP팀과 Script/Link Test 담당자에게 "
+        "검토 가능한 산출물을 전달하는 흐름으로 설계되어 있습니다.",
+        icon="ℹ️",
+    )
 
-    # 기능 개요 섹션 - 시각적 카드 형태로 구성
-    st.markdown("### 주요 기능")
+    _table([
+        {
+            "순서": "1",
+            "화면": "Sidebar",
+            "사용자가 하는 일": ".docx 설문지 또는 저장된 .json 세션 업로드",
+            "결과": "작업 세션 시작 또는 복원",
+        },
+        {
+            "순서": "2",
+            "화면": "Questionnaire Analyzer",
+            "사용자가 하는 일": "Study Brief 입력 후 AI 문항 추출 실행",
+            "결과": "문항, 보기, 필터, 스킵 로직, 지시문 추출",
+        },
+        {
+            "순서": "3",
+            "화면": "Questionnaire Analyzer",
+            "사용자가 하는 일": "추출 점검 리포트와 Spreadsheet 검토/수정",
+            "결과": "후속 작업에 사용할 확정 문항 테이블",
+        },
+        {
+            "순서": "4",
+            "화면": "Table Guide Builder",
+            "사용자가 하는 일": "Study Brief 확인, Table Title/Banner 생성",
+            "결과": "Table Guide 초안과 Banner Spec 초안",
+        },
+        {
+            "순서": "5",
+            "화면": "Table Guide Builder > 다운로드",
+            "사용자가 하는 일": "DP Handoff 검증 후 Excel 다운로드",
+            "결과": "DP 전달용 2-sheet Excel, 내부 리뷰용 Excel",
+        },
+        {
+            "순서": "6",
+            "화면": "Logic Checker",
+            "사용자가 하는 일": "QA 분석 실행, 로직/분기/체크리스트 확인",
+            "결과": "Script 구현 및 링크 테스트 확인 항목 Excel",
+        },
+    ])
 
-    # 기능별 카드 배치 (2행 3열)
-    col1, col2, col3 = st.columns(3)
+    st.divider()
 
-    with col1:
-        st.markdown("""
-        <div style="padding: 15px; border-radius: 10px; background-color: #fafafa; height: 200px; border: 1px solid #b2dfdb;">
-            <h4 style="color: #00796b; margin-top: 0;">Questionnaire Analyzer</h4>
-            <p>설문지 파일(.docx)에서 문항 번호, 텍스트, 유형을 AI 기반으로 자동 추출합니다. 보기, 로직, 필터까지 추출합니다.</p>
-        </div>
-        """, unsafe_allow_html=True)
+    _step(
+        1,
+        "파일 업로드 또는 세션 복원",
+        """
+사이드바의 **파일 업로드 (.docx / .json)** 영역에서 작업을 시작합니다.
 
-    with col2:
-        st.markdown("""
-        <div style="padding: 15px; border-radius: 10px; background-color: #fafafa; height: 200px; border: 1px solid #b2dfdb;">
-            <h4 style="color: #00796b; margin-top: 0;">Table Guide Builder</h4>
-            <p>Questionnaire Analyzer 결과를 기반으로 완전한 Table Guide 문서를 생성합니다. Table Title, Net/Recode, Banner, Sort/SubBanner, Special Instructions를 AI + 알고리즘으로 자동 생성하고, 다중시트 Excel로 내보낼 수 있습니다.</p>
-        </div>
-        """, unsafe_allow_html=True)
+- 새 설문지를 분석할 때는 `.docx` 파일을 업로드합니다.
+- 이전 작업을 이어서 할 때는 저장해둔 `_session.json` 파일을 업로드합니다.
+- 이미 세션이 있는 상태에서 다른 파일을 올리면 세션 덮어쓰기 확인 창이 표시됩니다.
+- 세션이 복원되면 Questionnaire Analyzer, Table Guide Builder, Logic Checker를 바로 사용할 수 있습니다.
+""",
+    )
 
-    with col3:
-        st.markdown("""
-        <div style="padding: 15px; border-radius: 10px; background-color: #fafafa; height: 200px; border: 1px solid #b2dfdb;">
-            <h4 style="color: #00796b; margin-top: 0;">Quality Checker</h4>
-            <p>설문 문항의 품질 분석(모호한 표현, 이중 질문, 유도 질문 등)과 문법 교정을 두 개의 탭으로 통합 제공합니다.</p>
-        </div>
-        """, unsafe_allow_html=True)
+    _step(
+        2,
+        "Questionnaire Analyzer에서 문항 추출",
+        """
+`.docx` 파일을 업로드하면 Questionnaire Analyzer에서 **AI로 문항 추출 시작** 버튼을 눌러 추출을 실행합니다.
+추출 전 Study Brief에 Client Brand와 Study Objective를 입력하면 Survey Intelligence와 후속 Table Guide 품질이 좋아집니다.
 
-    col4, col5, col6 = st.columns(3)
+처리 단계는 화면에 스트리밍 형태로 표시됩니다.
 
-    with col4:
-        st.markdown("""
-        <div style="padding: 15px; border-radius: 10px; background-color: #fafafa; height: 200px; border: 1px solid #b2dfdb;">
-            <h4 style="color: #00796b; margin-top: 0;">Length Estimator</h4>
-            <p>설문 문항의 예상 응답 소요 시간을 AI가 산출하여, 전체 설문 길이를 최적화할 수 있도록 지원합니다.</p>
-        </div>
-        """, unsafe_allow_html=True)
+1. DOCX 구조 파싱: 섹션, 단락, 표, 병합 셀, 취소선, 텍스트박스, 표 유형을 읽습니다.
+2. DOCX Preflight: 문항 후보, 문항유형 표기율, 보기표/매트릭스/일반표 리스크를 보여줍니다.
+3. 문항 패턴 스캔 및 청크 분할: AI 처리 전 문항 후보를 빠르게 확인합니다.
+4. AI 문항 추출: 문항번호, SourceVariable, 질문문, 문항유형, 보기, 필터, 스킵 로직, 지시문을 추출합니다.
+5. Survey Intelligence 분석: 조사 유형, 조사 목적, 주요 세그먼트를 추정합니다.
+""",
+    )
 
-    with col5:
-        st.markdown("""
-        <div style="padding: 15px; border-radius: 10px; background-color: #fafafa; height: 200px; border: 1px solid #b2dfdb;">
-            <h4 style="color: #00796b; margin-top: 0;">Skip Logic</h4>
-            <p>설문 문항 간의 스킵/분기 로직을 시각화하여 설문 흐름을 한눈에 파악하고 검증할 수 있습니다.</p>
-        </div>
-        """, unsafe_allow_html=True)
+    with st.expander("추출되는 주요 필드", expanded=False):
+        _table([
+            {"필드": "QuestionNumber", "의미": "문서에 표시된 문항 번호입니다. 예: SC1, Q1, B3"},
+            {"필드": "SourceVariable", "의미": "DP/Syntax에서 사용할 원천 변수명입니다. 비어 있으면 문항번호가 기본값으로 사용됩니다."},
+            {"필드": "QuestionText", "의미": "질문 본문입니다. Table Title과 Logic Checker의 핵심 입력입니다."},
+            {"필드": "QuestionType", "의미": "SA, MA, OE, NUMERIC, 5pt, Top 3, 5pt x 7 등 문항 유형입니다."},
+            {"필드": "AnswerOptions", "의미": "보기 코드와 라벨입니다. Banner 조건과 CodeLabels 생성에 사용됩니다."},
+            {"필드": "Filter", "의미": "응답 대상 조건입니다. 예: ASK ONLY IF SC1=1"},
+            {"필드": "SkipLogic", "의미": "조건부 이동/종료 로직입니다. Logic Checker의 핵심 입력입니다."},
+            {"필드": "Instructions", "의미": "로테이션, 파이핑, 단독 보기, SHOW CARD 등 Script 구현 지시사항입니다."},
+        ])
 
-    with col6:
-        st.write("")  # empty column for layout balance
+    _step(
+        3,
+        "추출 결과 점검 및 Spreadsheet 수정",
+        """
+추출이 끝나면 먼저 **추출 결과 점검**을 확인합니다.
+이 화면은 개발자 로그가 아니라 연구원이 우선 확인해야 할 리스크를 요약합니다.
 
-    st.markdown("---")
+- 문항 커버리지가 낮으면 실제 문항 누락 가능성을 확인합니다.
+- 보기 커버리지는 보기 코드/라벨이 충분히 추출되었는지 확인합니다.
+- 필터와 스킵 로직은 후속 Script 구현과 링크 테스트 품질에 직접 영향을 줍니다.
+- 참고 항목에는 보기 코드, 나이, TV 사이즈, 가격값처럼 문항처럼 보이지만 실제 문항이 아닐 수 있는 항목도 포함됩니다.
 
-    # 설문지 구성요소 식별 섹션 - 탭 인터페이스 적용
-    st.markdown("### 설문지 구성요소 식별")
-    st.write("""
-    Survey Stream이 설문지 파일에서 주요 정보를 어떻게 인식하고 처리하는지 알아보세요.
-    Questionnaire Analyzer는 아래 이미지와 같이 문항 번호, 텍스트, 유형을 자동으로 추출하여 분석의 기초를 마련합니다.
-    """)
-    # 이미지 추가 - 예외 처리 개선
-    try:
-        st.image("https://i.imgur.com/pDKxyiV.png", caption='예시: 문항 번호, 문항 텍스트, 문항 유형', use_container_width=False)
-    except Exception as e:
-        st.error(f"이미지를 불러올 수 없습니다: {e}")
+그 다음 Spreadsheet에서 잘못된 값을 직접 수정합니다. 특히 `SourceVariable`, `QuestionType`, `AnswerOptions`, `Filter`, `SkipLogic`, `Instructions`를 우선 확인하세요.
+""",
+    )
 
-    st.info("아래 탭을 클릭하여 각 구성요소의 **인식 규칙**과 **자동 생성 방식**을 자세히 확인하세요.", icon="👇")
+    with st.expander("DOCX 작성 권장 구조", expanded=False):
+        st.markdown(
+            """
+아래처럼 문항번호, 변수명, 문항유형, 필터/스킵, 보기 코드를 일관되게 작성하면 추출 정확도가 높아집니다.
 
-    # 탭 인터페이스로 구분
-    tab1, tab2, tab3, tab4 = st.tabs(["문항 번호 인식", "문항 유형 인식", "분석 유형 생성", "자동 행 추가"])
+```text
+[SC1. AGE (SA)]
+[PN: ASK ALL]
+[PN: QUOTA CHECK]
+What is your age?
 
-    with tab1:
-        st.markdown("""
-        <div style="padding: 15px; border-radius: 5px; background-color: #fafafa;">
-            <h4 style="margin-top: 0;">문항 번호 인식</h4>
-            <p>문항 번호는 일반적으로 알파벳, 숫자, 하이픈(-)의 조합으로 시작하며, 마침표(.)로 끝납니다. 각 문항을 고유하게 식별하는 데 사용됩니다.</p>
-            <ul>
-                <li>알파벳/숫자/기호 조합 + 마침표(.)</li>
-            </ul>
-            <p><strong>인식 예시:</strong> <code>Q1.</code>, <code>SQ1a.</code>, <code>A1-1.</code>, <code>문항1.</code></p>
-            <p><small><i>참고: 문항 텍스트 시작 부분에서 이 패턴을 찾아 인식합니다.</i></small></p>
-        </div>
-        """, unsafe_allow_html=True)
+18-24 years old | 1 | QUOTA CHECK
+25-34 years old | 2 | QUOTA CHECK
+35-44 years old | 3 | QUOTA CHECK
+45-54 years old | 4 | QUOTA CHECK
+55 years old or older | 5 | QUOTA CHECK
 
-    with tab2:
-        st.markdown("""
-        <div style="padding: 15px; border-radius: 5px; background-color: #fafafa;">
-            <h4 style="margin-top: 0;">문항 유형 인식</h4>
-            <p>문항 텍스트 끝 부분에 대괄호 <code>[ ]</code> 또는 소괄호 <code>( )</code> 안에 명시된 특정 키워드를 통해 문항 유형을 인식합니다.</p>
-        </div>
-        """, unsafe_allow_html=True)
+[Q1. KEY BUYING FACTORS (MA)]
+[PN: ASK ONLY IF SC1=1,2,3,4,5]
+[PN: ROTATE]
+Which of the following are important when choosing your next TV?
 
-        # 테이블 형식으로 문항 유형 정보 제공
-        data = {
-            "유형 구분": ["단수 응답", "복수 응답", "주관식 (문자)", "주관식 (숫자)", "척도형 (일반/Grid)", "순위형"],
-            "인식 키워드 (괄호 안)": ["SA, 단수, SELECT ONE", "MA, 복수, SELECT ALL", "OE, OPEN, 오픈, OPEN/SA", "NUMERIC", "SCALE, PT, 척도", "TOP, RANK, 순위"],
-            "인식 예시": ["[SA]", "(복수)", "[OE]", "(NUMERIC)", "[5pt x 7]", "(Top 3)"]
-        }
+Picture quality | 1
+Price | 2
+Brand | 3
+Smart features | 4
+Design | 5
+```
 
-        df = pd.DataFrame(data)
-        st.table(df)
-        st.markdown("<small><i>참고: 키워드는 대소문자를 구분하지 않습니다. 척도형/순위형의 경우 숫자(예: 5pt, Top 3) 정보도 함께 인식합니다.</i></small>", unsafe_allow_html=True)
+핵심은 문항번호, SourceVariable, 문항유형, Script 지시문, 보기 코드가 서로 분리되어 보이도록 쓰는 것입니다.
+"""
+        )
 
-    with tab3:
-        st.markdown("""
-        <div style="padding: 15px; border-radius: 5px; background-color: #fafafa;">
-            <h4 style="margin-top: 0;">분석 유형 (SummaryType) 생성</h4>
-            <p>인식된 '문항 유형(QuestionType)'을 기반으로, 테이블 결과표에 표시될 분석 지표(예: %, 평균 등)를 나타내는 '분석 유형(SummaryType)'이 자동으로 생성됩니다.</p>
-        </div>
-        """, unsafe_allow_html=True)
+    _step(
+        4,
+        "세션 저장 및 Analyzer 결과 다운로드",
+        """
+추출 결과를 검토한 뒤에는 세션을 저장하는 것이 좋습니다.
 
-        # 분석 유형 정보 - 표 형식으로 정리
-        data = {
-            "문항 유형 (예시)": ["SA, MA, OE", "NUMERIC", "N점 척도 (예: 5점)", "Grid 척도 (예: 5점x7개)", "순위형 (예: Top 3)"],
-            "자동 생성되는 분석 유형 (SummaryType)": [
-                "%",
-                "%, mean",
-                "%/Top2(4+5)/Mid(3)/Bot2(1+2)/Mean",
-                "Summary Top2%, Summary Mean, 각 항목 % (자동 행 추가됨)",
-                "각 순위 누적 % (1st, 1st+2nd, 1st+2nd+3rd) (자동 행 추가됨)"
-            ]
-        }
+- 사이드바 또는 추출 완료 화면의 **세션 저장** 버튼으로 `_session.json`을 내려받습니다.
+- 저장한 JSON을 다시 업로드하면 AI 재추출 없이 같은 상태를 복원할 수 있습니다.
+- Questionnaire Analyzer 하단 다운로드 버튼에서 CSV/Excel 형태로 추출 결과를 받을 수 있습니다.
+- Analyzer Excel은 문항 테이블, 보기 목록, Banner Layout, Net Recode Spec 등 후속 검토에 필요한 시트를 포함합니다.
+""",
+    )
 
-        df = pd.DataFrame(data)
-        st.table(df)
-        st.markdown("<small><i>참고: N점 척도의 Top/Mid/Bot 구분은 점수에 따라 달라집니다(4점, 5점, 6점, 7점, 10점 기준 내장). 사용자는 생성된 값을 수정할 수 있습니다.</i></small>", unsafe_allow_html=True)
+    st.divider()
 
-    with tab4:
-        st.markdown("""
-        <div style="padding: 15px; border-radius: 5px; background-color: #fafafa;">
-            <h4 style="margin-top: 0;">자동 행 추가</h4>
-            <p>'Grid 척도형'과 '순위형' 문항의 경우, 분석에 필요한 추가 행이 원본 문항 아래에 자동으로 생성됩니다.</p>
-        </div>
-        """, unsafe_allow_html=True)
+    _step(
+        5,
+        "Table Guide Builder에서 Study Brief 확인",
+        """
+Table Guide Builder는 Questionnaire Analyzer의 확정 문항 테이블을 사용합니다.
+먼저 앱이 추정한 Study Brief를 확인하고 필요하면 수정합니다.
 
-        # 두 개의 열로 나누어 정보 제공
-        col1, col2 = st.columns(2)
+확인할 항목:
 
-        with col1:
-            st.markdown("""
-            <div style="padding: 10px; border-radius: 5px; background-color: #e0f2f1; margin-top: 10px;">
-                <h5 style="margin-top: 0;">Grid 척도형 문항 (예: `[5pt x 7]`)</h5>
-                <p>Grid의 전체 요약(Top2, Mean 등)과 개별 속성 결과를 보기 위한 행이 추가됩니다.</p>
-                <ul>
-                    <li><b>원본 행:</b> 문항 정보 표시</li>
-                    <li><b>추가 행 1:</b> 요약 (Summary Top2%)</li>
-                    <li><b>추가 행 2:</b> 요약 (Summary Mean)</li>
-                    <li><b>추가 행 3~N:</b> 각 속성별 결과 (%)</li>
-                </ul>
-                <pre style="background-color: #f5f5f5; padding: 8px; border-radius: 3px;">
-Q5_1: Summary Top2%
-Q5_2: Summary Mean
-Q5_3: 항목1 %
-Q5_4: 항목2 %
-...
-Q5_9: 항목7 %</pre>
-            </div>
-            """, unsafe_allow_html=True)
+- Client Brand
+- Study Type
+- Study Objective
+- Research Objectives
+- Key Segments
 
-        with col2:
-            st.markdown("""
-            <div style="padding: 10px; border-radius: 5px; background-color: #e0f2f1; margin-top: 10px;">
-                <h5 style="margin-top: 0;">순위형 문항 (예: `[Top 3]`)</h5>
-                <p>각 순위별 응답 및 누적 응답 결과를 보기 위한 행이 추가됩니다.</p>
-                <ul>
-                    <li><b>원본 행:</b> 문항 정보 표시</li>
-                    <li><b>추가 행 1:</b> 1순위 (%)</li>
-                    <li><b>추가 행 2:</b> 1+2순위 누적 (%)</li>
-                    <li><b>추가 행 3:</b> 1+2+3순위 누적 (%)</li>
-                </ul>
-                <pre style="background-color: #f5f5f5; padding: 8px; border-radius: 3px;">
-Q6_1: 1st
-Q6_2: 1st+2nd
-Q6_3: 1st+2nd+3rd</pre>
-            </div>
-            """, unsafe_allow_html=True)
-        st.markdown("<small><i>참고: 자동 추가된 행의 'TableNumber'는 원본 문항 번호에 `_숫자`가 붙는 형식(예: Q5_1, Q5_2)으로 자동 생성됩니다.</i></small>", unsafe_allow_html=True)
+이 정보는 Table Title과 Banner 생성에 직접 사용됩니다. 조사 목적이 잘못 잡히면 제목과 배너가 질문문을 기계적으로 요약하는 방향으로 흐를 수 있습니다.
+""",
+    )
 
-    st.markdown("---")
+    _step(
+        6,
+        "Table Title 생성 및 검토",
+        """
+출력 언어를 선택한 뒤 **Table Titles**를 생성합니다.
+현재 구현은 질문문만 요약하지 않고 다음 정보를 함께 사용합니다.
 
-    # DOCX AI 추출 섹션
-    st.markdown("### DOCX AI 추출 기능")
-    st.write("""
-    DOCX 파일을 업로드하면 AI 기반 하이브리드 추출이 활성화됩니다.
-    패턴 인식으로 문항번호/유형을 즉시 추출한 후, LLM이 검증하고 응답 보기, 스킵 로직, 필터 등 추가 필드를 완성합니다.
-    """)
+- Survey Intelligence와 Study Brief
+- SourceVariable과 QuestionNumber
+- 질문문, 문항유형, 보기 코드/라벨
+- 필터, 스킵 로직, 로테이션/파이핑 등 지시문
+- 문항 역할, 변수 유형, 분석 가치
 
-    tab_docx1, tab_docx2, tab_docx3 = st.tabs(["추출 항목", "사용 방법", "결과 보기"])
+생성 후 편집 테이블에서 어색한 제목을 수정할 수 있습니다. 앱은 `Key Buying Factors`, `Purchase Intent`, `Aided Brand Awareness`, `Brand Consideration`, `Main Brand` 같은 마케팅 리서치 표준 표현을 우선하도록 후처리합니다.
+""",
+    )
 
-    with tab_docx1:
-        st.markdown("""
-        <div style="padding: 15px; border-radius: 5px; background-color: #fafafa;">
-            <h4 style="margin-top: 0;">DOCX에서 추출되는 항목</h4>
-        </div>
-        """, unsafe_allow_html=True)
+    with st.expander("Table Title 예시", expanded=False):
+        _table([
+            {"질문 의도": "구매/선택 시 중요한 요소", "권장 Table Title": "Key Buying Factors"},
+            {"질문 의도": "향후 구매 가능성/의향", "권장 Table Title": "Purchase Intent"},
+            {"질문 의도": "인지 브랜드", "권장 Table Title": "Aided Brand Awareness"},
+            {"질문 의도": "고려 브랜드", "권장 Table Title": "Brand Consideration"},
+            {"질문 의도": "현재 보유/사용 브랜드", "권장 Table Title": "Main Brand"},
+        ])
 
-        docx_fields = {
-            "항목": [
-                "문항 번호 (QuestionNumber)",
-                "질문 텍스트 (QuestionText)",
-                "문항 유형 (QuestionType)",
-                "응답 보기 (AnswerOptions)",
-                "스킵 로직 (SkipLogic)",
-                "필터 (Filter)",
-                "지시문 (Instructions)",
-            ],
-            "설명": [
-                "Q1, SQ1a, A1-1 등 문항 식별자",
-                "질문 본문 텍스트",
-                "SA, MA, OE, NUMERIC, SCALE, RANK, GRID 등",
-                "1.매우 그렇다 | 2.그렇다 | 3.보통 등 개별 보기 목록",
-                "조건부 이동 (예: Q1=3 → Q5로 이동)",
-                "응답 대상 조건 (예: Q2=3,4 응답자만)",
-                "면접원 지시문 (예: SHOW CARD, 보기 로테이션)",
-            ],
-            "추출 방식": [
-                "패턴 + AI 검증",
-                "패턴 + AI 검증",
-                "패턴 + AI 검증",
-                "AI 추출",
-                "AI 추출",
-                "AI 추출",
-                "AI 추출",
-            ]
-        }
-        st.table(pd.DataFrame(docx_fields))
+    _step(
+        7,
+        "Banner 생성 및 편집",
+        """
+필요하면 **Banner (Beta)**를 선택해 배너를 생성합니다.
+배너는 단순히 문항을 나열하는 것이 아니라, 모든 테이블을 읽을 분석 축을 설계하는 단계입니다.
 
-    with tab_docx2:
-        st.markdown("""
-        <div style="padding: 15px; border-radius: 5px; background-color: #fafafa;">
-            <h4 style="margin-top: 0;">DOCX 추출 사용 방법</h4>
-            <ol>
-                <li>사이드바에서 <b>.docx</b> 파일을 업로드합니다.</li>
-                <li>Questionnaire Analyzer 페이지에서 <b>'Extract Questions with AI'</b> 버튼을 클릭합니다.</li>
-                <li>AI가 자동으로 문항을 추출합니다. 진행률이 표시되며, 완료 후 결과가 Tree View와 Spreadsheet 탭에 나타납니다.</li>
-                <li>CSV 또는 <b>Excel(.xlsx)</b> 형식으로 다운로드할 수 있습니다.</li>
-                <li><b>Save Session</b>으로 추출 결과를 JSON 파일로 저장하면 다음에 재추출 없이 불러올 수 있습니다.</li>
-            </ol>
-        </div>
-        """, unsafe_allow_html=True)
+검토 포인트:
 
-    with tab_docx3:
-        st.markdown("""
-        <div style="padding: 15px; border-radius: 5px; background-color: #fafafa;">
-            <h4 style="margin-top: 0;">결과 보기 방식</h4>
-            <p>DOCX 추출 결과는 두 가지 탭으로 제공됩니다:</p>
-            <ul>
-                <li><b>Tree View:</b> 각 문항을 펼칠 수 있는 계층 구조로 표시합니다. 보기 목록, 스킵 로직, 필터, 지시문 등을 시각적으로 확인할 수 있습니다.</li>
-                <li><b>Spreadsheet:</b> 전체 문항을 편집 가능한 테이블로 표시합니다. 직접 수정 후 다운로드할 수 있습니다.</li>
-            </ul>
-            <p><b>다운로드 옵션:</b></p>
-            <ul>
-                <li><b>CSV:</b> 기존과 동일한 flat 형식 (모든 컬럼 포함)</li>
-                <li><b>Excel:</b> 시트 1에 메인 문항 테이블, 시트 2에 응답 보기 flat 테이블 (QuestionNumber, OptionCode, OptionLabel)</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
+- 성별, 연령, 소득수준처럼 기본적으로 필요한 인구통계 축이 포함되었는지 확인합니다.
+- 핵심 타깃, 브랜드 사용자, 구매 의향자, 사용 행태, 태도 세그먼트가 필요한지 확인합니다.
+- 각 Banner Point의 조건이 실제 보기 코드와 맞는지 확인합니다.
+- `Rationale(KO)`는 왜 해당 배너가 필요한지 한국어로 설명합니다.
+- 필요 없는 배너 값은 제외하거나 삭제하고, 필요한 값은 수동으로 추가합니다.
+""",
+    )
 
-    st.markdown("---")
+    _step(
+        8,
+        "DP 전달 파일 다운로드",
+        """
+다운로드 탭에서 **Table Guide 컴파일**을 실행한 뒤 파일을 내려받습니다.
+다운로드 직전 DP Handoff 검증 메시지를 확인합니다.
 
-    # 팁과 자주 묻는 질문 섹션 추가
-    st.markdown("### 사용 팁 및 주의사항")
+- 문제가 없으면 Ready for DP 상태로 안내됩니다.
+- 확인 필요 항목이 있으면 Table Guide 또는 Banner Spec에서 수정한 뒤 다시 컴파일합니다.
+""",
+    )
 
-    # 확장 가능한 FAQ 섹션
-    with st.expander("더 정확한 분석 결과를 얻으려면? (설문지 작성 가이드)"):
-        st.markdown("""
-        - **문항 번호:** 각 문항 시작 시 `Q1.`, `SQ1a.` 와 같이 명확하게 작성하고 **마침표(.)**로 마무리해주세요.
-        - **문항 유형:** 문항 텍스트 끝에 `[SA]`, `(MA)`, `[5pt x 7]`, `(Top 3)` 와 같이 **대괄호 `[]` 또는 소괄호 `()`** 안에 표준 키워드를 명확히 표기해주세요. (위에 설명된 키워드 참고)
-        - **일관성:** 파일 전체에서 문항 번호와 유형 표기 방식을 일관되게 유지하는 것이 좋습니다.
-        """)
+    with st.expander("다운로드 파일 구성", expanded=False):
+        _table([
+            {
+                "파일": "내부 리뷰용 Table Guide Excel",
+                "대상": "Researcher",
+                "내용": "Cover, Table Guide, Banner Spec, Banner Layout, Net Recode Spec, Answer Options",
+            },
+            {
+                "파일": "DP Handoff Excel",
+                "대상": "DP팀",
+                "내용": "Table Guide, Banner Spec 2개 시트. SPSS Syntax와 Tabulation 작업의 기준 문서입니다.",
+            },
+            {
+                "파일": "CSV",
+                "대상": "Researcher",
+                "내용": "간단한 리뷰나 다른 도구 연동을 위한 flat table입니다.",
+            },
+            {
+                "파일": "Session JSON",
+                "대상": "작업자",
+                "내용": "현재 Table Guide 작업 상태를 저장하고 이어서 작업할 때 사용합니다.",
+            },
+        ])
 
-    with st.expander("주의사항"):
-        st.markdown("""
-        - **인식 오류:** 문항 번호나 유형 표기가 불명확하거나 누락된 경우, 해당 문항의 정보가 정확히 추출되지 않거나 `Questionnaire Analyzer` 결과 테이블에서 직접 수정해야 할 수 있습니다.
-        - **AI 결과:** `Table Guide Builder`와 `Quality Checker` 등 AI 기반 기능의 결과는 항상 사용자가 검토 후 필요시 수정하는 것을 권장합니다.
-         """)
+    st.divider()
 
-    with st.expander("추천 작업 흐름"):
-        st.markdown("""
-        1.  **파일 업로드:** 사이드바에서 설문지 파일 (`.docx`)을 업로드합니다.
-        2.  **Questionnaire Analyzer:**
-            - 'Extract Questions with AI' 버튼을 클릭하면 AI가 자동으로 추출합니다. 문항 번호, 텍스트, 유형뿐만 아니라 보기, 로직, 필터, 지시문까지 추출됩니다.
-            - 결과를 Spreadsheet(편집 가능 테이블)에서 확인합니다. 상세 카드뷰는 하단 Tree View expander에서 열 수 있습니다.
-            - 필요시 테이블 내에서 직접 수정할 수 있습니다.
-            - 하단의 `Download CSV` 또는 `Download Excel` 버튼으로 결과를 저장합니다.
-            - **Save Session**으로 추출 결과를 저장해두면 나중에 재추출 없이 불러올 수 있습니다.
-        3.  **Table Guide Builder:** 6개 탭을 순서대로 진행합니다.
-            - **Table Titles**: 언어 선택 → `Generate Titles`로 테이블 제목 생성
-            - **Net/Recode**: `Generate`로 Net/Recode 제안 생성
-            - **Banner Setup**: `Auto-Suggest`로 배너 후보 자동 감지, 수동 추가/편집 가능
-            - **Sort & SubBanner**: `Auto-Generate`로 정렬 규칙 + SubBanner 자동 생성
-            - **Special Instructions**: `Auto-Generate`로 로테이션/파이핑 등 프로그래밍 지시사항 감지
-            - **Review & Export**: 완성도 체크리스트 확인 → `Compile Table Guide` → Excel/CSV/Session 다운로드
-        4.  **Quality Checker:**
-            - **Quality Analysis 탭**: 언어 선택 → `Analyze Quality`로 문항 품질 분석 (모호한 표현, 이중 질문 등 감지)
-            - **Grammar Correction 탭**: 언어 선택 → `Grammar Check`로 문법 교정 수행. 원본↔교정 비교 뷰에서 확인 후 `Apply Edits`로 반영합니다.
-        5.  **Length Estimator / Skip Logic:** Questionnaire Analyzer 추출 결과를 기반으로 추가 분석을 수행합니다.
-        6.  **결과 활용:** 다운로드한 CSV/Excel 파일을 후속 작업(예: 통계 분석 툴, 보고서 작성)에 활용합니다.
-        """)
+    _step(
+        9,
+        "Logic Checker로 Script/링크 테스트 리스크 점검",
+        """
+Table Guide 전달 전후로 **Logic Checker**에서 `QA 분석 실행`을 눌러 설문 흐름을 점검합니다.
+Logic Checker는 LLM 없이 알고리즘으로 실행되며, 다음 결과를 제공합니다.
+""",
+    )
 
-    # 예제 설문지 다운로드 섹션
-    st.markdown("""
-    <div style="padding: 15px; border-radius: 10px; background-color: #e0f7fa; margin: 20px 0; text-align: center;">
-        <h4 style="margin-top: 0;">시작하기</h4>
-        <p>아래 예제 설문지(DOCX)를 다운로드하여 Survey Stream의 기능을 직접 테스트해보세요.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    _table([
+        {
+            "탭": "로직 시각화",
+            "사용 목적": "스킵 로직, 필터 조건, 순차 진행을 그래프와 표로 확인합니다.",
+            "누가 보나": "Researcher / Script",
+        },
+        {
+            "탭": "분기 테스트",
+            "사용 목적": "스킵 분기를 커버하는 필수 테스트 시나리오를 확인합니다.",
+            "누가 보나": "Researcher / Link Test",
+        },
+        {
+            "탭": "응답자 경로",
+            "사용 목적": "대표 타깃, 비타깃, 탈락 응답자의 예상 경로를 확인합니다.",
+            "누가 보나": "Researcher / Link Test",
+        },
+        {
+            "탭": "체크리스트",
+            "사용 목적": "설문지 수정 필요, Script 구현 확인, 링크 테스트 확인 항목을 업무별로 봅니다.",
+            "누가 보나": "Researcher / Script / Link Test",
+        },
+    ])
 
-    # 파일 존재 여부 확인 및 예외 처리 강화
-    if os.path.exists(EXAMPLE_TEMPLATE_PATH):
-        try:
-            with open(EXAMPLE_TEMPLATE_PATH, "rb") as file:
-                centered_col = st.columns([1, 2, 1])[1]
-                with centered_col:
-                    st.download_button(
-                        label="예제 설문지 다운로드 (DOCX)",
-                        data=file,
-                        file_name=os.path.basename(EXAMPLE_TEMPLATE_PATH),
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        use_container_width=True,
-                        key="download_example_docx"
-                    )
-        except Exception as e:
-            st.error(f"예제 설문지 파일을 읽는 중 오류 발생: {e}")
-    else:
-        st.warning(f"예제 설문지 파일을 찾을 수 없습니다: {EXAMPLE_TEMPLATE_PATH}")
+    with st.expander("Logic Checker Excel 구성", expanded=False):
+        st.markdown(
+            """
+`Logic Checker 결과 다운로드 (Excel)` 파일에는 다음 시트가 포함됩니다.
 
-    # 하단 푸터
-    st.markdown("""
-    <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eeeeee;">
-        <p style="color: #666666; font-size: 0.9em;">&copy; 2024 Survey Stream</p>
-    </div>
-    """, unsafe_allow_html=True)
+- **Summary**: 전체 상태, 분기 커버리지, 업무 구분별 확인 항목 수
+- **Logic Map**: 기준 문항, 조건, 대상 문항, 확인 포인트
+- **Branch Test**: 링크 테스트에 사용할 분기 테스트 시나리오
+- **Respondent Paths**: 대표 응답자 유형별 예상 경로
+- **Checklist**: 담당, 업무 구분, 심각도, 문항, 상세, 기대 동작, 메모
+- **Unparsed**: 자동 파싱이 어려운 조건과 수동 확인 방법
+"""
+        )
+
+    st.divider()
+
+    _step(
+        10,
+        "최종 전달 전 확인",
+        """
+최종 전달 전에는 아래 순서로 확인하는 것을 권장합니다.
+
+1. 문항 수와 주요 스크리너/본조사 문항이 누락되지 않았는지 확인합니다.
+2. SourceVariable이 DP/Syntax에서 사용할 변수명과 맞는지 확인합니다.
+3. 문항유형과 보기 코드가 실제 설문지와 맞는지 확인합니다.
+4. Table Title이 질문 직역이 아니라 조사 도메인에서 쓰는 표현인지 확인합니다.
+5. Banner 조건과 CodeLabels가 실제 보기 코드와 맞는지 확인합니다.
+6. DP Handoff Excel의 확인 필요 항목이 남아 있지 않은지 확인합니다.
+7. Logic Checker의 Script 구현 확인/링크 테스트 확인 항목을 담당자에게 전달합니다.
+""",
+    )
+
+    st.warning(
+        "AI가 생성한 결과는 최종 산출물이 아니라 초안입니다. "
+        "문항 추출, Table Title, Banner 조건, DP 전달 파일은 반드시 연구원이 검토한 뒤 전달하세요.",
+        icon="⚠️",
+    )

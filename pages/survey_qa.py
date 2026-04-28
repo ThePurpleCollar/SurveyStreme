@@ -655,6 +655,8 @@ def _build_qa_excel(
                 cell.alignment = wrap
         for col, width in widths.items():
             ws.column_dimensions[col].width = width
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
 
     critical_fill = PatternFill(start_color="FFCDD2", end_color="FFCDD2", fill_type="solid")
     warning_fill = PatternFill(start_color="FFF9C4", end_color="FFF9C4", fill_type="solid")
