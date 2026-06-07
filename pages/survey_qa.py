@@ -49,6 +49,15 @@ CHECKLIST_CATEGORY_LABELS = {
     "DEAD_END": "도달 불가",
 }
 
+BRANCH_DIAGNOSTIC_STATUS_LABELS = {
+    "covered": "커버됨",
+    "unparsed_condition": "조건 파싱 불가",
+    "unsatisfiable_condition": "조건 모순",
+    "candidate_truncated": "후보 제한",
+    "source_not_reached": "기준 문항 미도달",
+    "not_triggered_on_trace": "분기 미발생",
+}
+
 
 def _collect_qa_items(result: SimulationResult | None, review: ReviewReport, checklist) -> list[dict]:
     """Collect QA findings into researcher-facing workstreams."""
@@ -71,6 +80,30 @@ def _collect_qa_items(result: SimulationResult | None, review: ReviewReport, che
                     f"2. 해당 조건 충족 시 올바른 문항으로 이동하는지 수동 테스트"
                 ),
                 "source": "파싱 실패",
+            })
+
+    if result and result.branch_diagnostics:
+        for diag in result.branch_diagnostics:
+            if diag.status in {"covered", "unparsed_condition"}:
+                continue
+            workstream = "설문지 수정 필요" if diag.severity == "critical" else "링크 테스트 확인"
+            status_label = BRANCH_DIAGNOSTIC_STATUS_LABELS.get(diag.status, diag.status)
+            items.append({
+                "severity": diag.severity,
+                "workstream": workstream,
+                "owner": WORKSTREAM_OWNERS[workstream],
+                "status": "미확인",
+                "category": "분기 커버리지",
+                "question": diag.source,
+                "title": f"{diag.branch} - {status_label}",
+                "detail": (
+                    f"{diag.detail}\n"
+                    f"조건: {diag.condition}\n"
+                    f"예시 응답: {diag.example_selections or '없음'}\n"
+                    f"예시 경로: {' → '.join(diag.example_path) if diag.example_path else '없음'}"
+                ),
+                "expected": f"{diag.source}에서 조건 충족 시 {diag.target}으로 이동",
+                "source": "분기 진단",
             })
 
     for item in review.items:
@@ -208,6 +241,10 @@ def _format_answer_selection(qn: str, code: str, label: str = "") -> str:
     return f"{qn}={code}"
 
 
+def _branch_base_key(branch: str) -> str:
+    return re.sub(r"\s+\(.+\)$", "", str(branch or ""))
+
+
 def _build_logic_map_rows(questions) -> list[dict]:
     """Build a human-readable logic table for researchers."""
     qn_lookup = {q.question_number.upper(): q.question_number for q in questions}
@@ -275,11 +312,11 @@ def _scenario_rows(questions, result: SimulationResult) -> list[dict]:
         ]
         verified = ts.verified_branches[:5]
         first_branch = verified[0] if verified else ""
-        branch_info = context.get(first_branch, {})
+        branch_info = context.get(_branch_base_key(first_branch), {})
         if first_branch:
             purpose = (
-                f"{branch_info.get('기준 문항', first_branch.split('->')[0])}에서 "
-                f"{branch_info.get('대상', first_branch.split('->')[-1])} 이동 확인"
+                f"{branch_info.get('기준 문항', _branch_base_key(first_branch).split('->')[0])}에서 "
+                f"{branch_info.get('대상', _branch_base_key(first_branch).split('->')[-1])} 이동 확인"
             )
         else:
             purpose = "순차 진행 경로 확인"
@@ -523,6 +560,29 @@ def _render_branch_tests(questions, result: SimulationResult):
                 st.markdown(f"2. 예상 경로: {row['예상 경로']}")
                 st.markdown(f"3. 확인 포인트: {row['확인 포인트']}")
 
+    _render_branch_diagnostics(result)
+
+
+def _render_branch_diagnostics(result: SimulationResult):
+    diagnostics = [d for d in result.branch_diagnostics if d.status != "covered"]
+    if not diagnostics:
+        return
+
+    st.markdown("**미커버/수동 확인 분기**")
+    rows = []
+    for d in diagnostics:
+        rows.append({
+            "상태": BRANCH_DIAGNOSTIC_STATUS_LABELS.get(d.status, d.status),
+            "심각도": SEVERITY_LABELS.get(d.severity, d.severity),
+            "분기": d.branch,
+            "원인": d.detail,
+            "후보 수": d.candidate_count,
+            "예시 응답": ", ".join(f"{k}={v}" for k, v in d.example_selections.items()),
+            "예시 경로": " → ".join(d.example_path[:12]),
+        })
+
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
 
 def _render_persona_scenarios(personas: list[PersonaScenario]):
     """Representative respondent paths for researcher review."""
@@ -673,6 +733,10 @@ def _build_qa_excel(
     ws.append(["전체 경로", result.total_paths if result else 0])
     ws.append(["분기 커버리지", f"{result.branch_coverage_percent:.0f}%" if result else ""])
     ws.append(["테스트 시나리오", len(result.test_scenarios) if result else 0])
+    ws.append([
+        "미커버/수동 확인 분기",
+        sum(1 for d in result.branch_diagnostics if d.status != "covered") if result else 0,
+    ])
     ws.append(["대표 응답자 경로", len(personas or [])])
     ws.append(["설문지 수정 필요", counts["설문지 수정 필요"]])
     ws.append(["Script 구현 확인", counts["Script 구현 확인"]])
@@ -698,7 +762,32 @@ def _build_qa_excel(
         ws_branch.append([row.get(h, "") for h in branch_headers])
     _finish_sheet(ws_branch, {"A": 5, "B": 10, "C": 35, "D": 45, "E": 55, "F": 35})
 
-    # ── Sheet 4: Respondent Paths ──
+    # ── Sheet 4: Branch Diagnostics ──
+    ws_diag = wb.create_sheet("Branch Diagnostics")
+    diag_headers = [
+        "상태", "심각도", "분기", "조건", "원인", "후보 수",
+        "후보 제한", "예시 응답", "예시 경로",
+    ]
+    ws_diag.append(diag_headers)
+    _style_header(ws_diag)
+    for d in (result.branch_diagnostics if result else []):
+        ws_diag.append([
+            BRANCH_DIAGNOSTIC_STATUS_LABELS.get(d.status, d.status),
+            SEVERITY_LABELS.get(d.severity, d.severity),
+            d.branch,
+            d.condition,
+            d.detail,
+            d.candidate_count,
+            "예" if d.truncated else "아니오",
+            ", ".join(f"{k}={v}" for k, v in d.example_selections.items()),
+            " → ".join(d.example_path[:20]),
+        ])
+    _finish_sheet(
+        ws_diag,
+        {"A": 18, "B": 10, "C": 35, "D": 40, "E": 65, "F": 10, "G": 12, "H": 35, "I": 60},
+    )
+
+    # ── Sheet 5: Respondent Paths ──
     ws_persona = wb.create_sheet("Respondent Paths")
     persona_headers = ["#", "응답자 유형", "선택값", "예상 경로", "경로 길이", "탈락 경로"]
     ws_persona.append(persona_headers)
@@ -718,7 +807,7 @@ def _build_qa_excel(
         ])
     _finish_sheet(ws_persona, {"A": 5, "B": 35, "C": 45, "D": 60, "E": 10, "F": 12})
 
-    # ── Sheet 5: Checklist ──
+    # ── Sheet 6: Checklist ──
     ws_check = wb.create_sheet("Checklist")
     check_headers = [
         "순서", "상태", "담당", "업무 구분", "심각도", "카테고리",
@@ -756,7 +845,7 @@ def _build_qa_excel(
          "G": 12, "H": 40, "I": 60, "J": 45, "K": 30},
     )
 
-    # ── Sheet 6: Unparsed Conditions ──
+    # ── Sheet 7: Unparsed Conditions ──
     ws_unparsed = wb.create_sheet("Unparsed")
     ws_unparsed.append(["문항", "조건", "확인 방법"])
     _style_header(ws_unparsed)

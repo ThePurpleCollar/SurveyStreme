@@ -116,4 +116,101 @@ forward_path = trace_path(forward_reference_questions, forward_graph, {"Q2": "1"
 assert forward_path.question_numbers == ["Q1", "Q2"]
 assert forward_path.steps[0].skip_triggered is None
 
+
+skipped_source_questions = [
+    SurveyQuestion(
+        question_number="Q1",
+        question_text="Entry branch",
+        question_type="SA",
+        answer_options=[AnswerOption("1", "Skip Q2"), AnswerOption("2", "Visit Q2")],
+        skip_logic=[SkipLogic(condition="Q1=1", target="Q3")],
+    ),
+    SurveyQuestion(
+        question_number="Q2",
+        question_text="Unreachable branch source when Q1=1",
+        question_type="SA",
+        skip_logic=[SkipLogic(condition="Q1=1", target="END")],
+    ),
+    SurveyQuestion(question_number="Q3", question_text="Final", question_type="SA"),
+]
+
+skipped_source_result = simulate_paths(skipped_source_questions)
+covered_branches = {
+    branch
+    for scenario in skipped_source_result.test_scenarios
+    for branch in scenario.verified_branches
+}
+assert "Q1->Q3 (Q1=1)" in covered_branches
+assert "Q2->END (Q1=1)" not in covered_branches
+assert skipped_source_result.branch_coverage_percent == 50.0
+skipped_diagnostics = {d.branch: d.status for d in skipped_source_result.branch_diagnostics}
+assert skipped_diagnostics["Q1->Q3 (Q1=1)"] == "covered"
+assert skipped_diagnostics["Q2->END (Q1=1)"] == "source_not_reached"
+
+
+or_alternative_questions = [
+    SurveyQuestion(
+        question_number="Q1",
+        question_text="Entry branch",
+        question_type="SA",
+        answer_options=[AnswerOption("1", "Skip Q2"), AnswerOption("2", "Visit Q2")],
+        skip_logic=[SkipLogic(condition="Q1=1", target="Q3")],
+    ),
+    SurveyQuestion(
+        question_number="Q2",
+        question_text="Branch reachable only by second OR alternative",
+        question_type="SA",
+        skip_logic=[SkipLogic(condition="Q1=1 OR Q1=2", target="END")],
+    ),
+    SurveyQuestion(question_number="Q3", question_text="Final", question_type="SA"),
+]
+
+or_alternative_result = simulate_paths(or_alternative_questions)
+or_covered_branches = {
+    branch
+    for scenario in or_alternative_result.test_scenarios
+    for branch in scenario.verified_branches
+}
+assert "Q1->Q3 (Q1=1)" in or_covered_branches
+assert "Q2->END (Q1=1 OR Q1=2)" in or_covered_branches
+assert or_alternative_result.branch_coverage_percent == 100.0
+or_diagnostics = {d.branch: d.status for d in or_alternative_result.branch_diagnostics}
+assert or_diagnostics["Q2->END (Q1=1 OR Q1=2)"] == "covered"
+
+
+unsatisfiable_questions = [
+    SurveyQuestion(
+        question_number="Q1",
+        question_text="Impossible condition",
+        question_type="SA",
+        answer_options=[AnswerOption("1", "One"), AnswerOption("2", "Two")],
+        skip_logic=[SkipLogic(condition="Q1=1 AND Q1=2", target="END")],
+    ),
+    SurveyQuestion(question_number="Q2", question_text="Final", question_type="SA"),
+]
+
+unsatisfiable_result = simulate_paths(unsatisfiable_questions)
+unsat_diagnostics = {d.branch: d for d in unsatisfiable_result.branch_diagnostics}
+assert unsat_diagnostics["Q1->END (Q1=1 AND Q1=2)"].status == "unsatisfiable_condition"
+assert unsat_diagnostics["Q1->END (Q1=1 AND Q1=2)"].severity == "critical"
+
+
+many_codes = [str(i) for i in range(1, 14)]
+truncated_but_covered_questions = [
+    SurveyQuestion(
+        question_number="Q1",
+        question_text="Many-code branch",
+        question_type="SA",
+        answer_options=[AnswerOption(code, f"Code {code}") for code in many_codes],
+        skip_logic=[SkipLogic(condition=f"Q1={','.join(many_codes)}", target="END")],
+    ),
+    SurveyQuestion(question_number="Q2", question_text="Final", question_type="SA"),
+]
+
+truncated_but_covered_result = simulate_paths(truncated_but_covered_questions)
+truncated_diagnostics = {d.branch: d for d in truncated_but_covered_result.branch_diagnostics}
+truncated_branch = f"Q1->END (Q1={','.join(many_codes)})"
+assert truncated_diagnostics[truncated_branch].status == "covered"
+assert truncated_but_covered_result.branch_coverage_percent == 100.0
+
 print("ALL PATH SIMULATOR EVALUATOR TESTS PASSED")

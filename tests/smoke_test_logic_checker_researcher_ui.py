@@ -87,11 +87,13 @@ assert wb.sheetnames == [
     "Summary",
     "Logic Map",
     "Branch Test",
+    "Branch Diagnostics",
     "Respondent Paths",
     "Checklist",
     "Unparsed",
 ]
 assert "업무 구분" in [cell.value for cell in wb["Checklist"][1]]
+assert "분기" in [cell.value for cell in wb["Branch Diagnostics"][1]]
 assert "Script 구현 확인" in [row[0] for row in wb["Summary"].iter_rows(min_row=2, max_col=1, values_only=True)]
 
 assert parse_target("END") == "END"

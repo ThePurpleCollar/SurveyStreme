@@ -19,6 +19,8 @@ from services.skip_logic_service import (
     SkipLogicGraph,
 )
 
+MAX_TRIGGER_SELECTION_OPTIONS = 12
+
 # ---------------------------------------------------------------------------
 # 데이터 클래스
 # ---------------------------------------------------------------------------
@@ -69,6 +71,22 @@ class TestScenario:
 
 
 @dataclass
+class BranchDiagnostic:
+    """Per skip-rule coverage diagnosis for QA handoff."""
+    branch: str
+    source: str
+    target: str
+    condition: str
+    status: str
+    severity: str
+    detail: str
+    candidate_count: int = 0
+    truncated: bool = False
+    example_selections: Dict[str, str] = field(default_factory=dict)
+    example_path: List[str] = field(default_factory=list)
+
+
+@dataclass
 class GraphAnalysis:
     unreachable_questions: List[str]     # 도달 불가 문항
     loop_detected: bool
@@ -84,6 +102,7 @@ class SimulationResult:
     total_questions: int
     total_skip_rules: int
     unparsed_conditions: List[Tuple[str, str]]
+    branch_diagnostics: List[BranchDiagnostic] = field(default_factory=list)
 
     @property
     def total_paths(self) -> int:
@@ -178,59 +197,343 @@ def _condition_matches(condition_text: str, answer_selections: Dict[str, object]
     return parsed.evaluate(_answers_for_evaluator(answer_selections))
 
 
+@dataclass
+class _SelectionOptionResult:
+    options: List[Dict[str, str]]
+    truncated: bool = False
+    unsatisfiable: bool = False
+    reason: str = ""
+
+
 def _trigger_selections_for_condition(
     condition_text: str,
     questions_by_number: Dict[str, SurveyQuestion],
 ) -> Dict[str, str]:
+    options = _trigger_selection_options_for_condition(condition_text, questions_by_number)
+    return options[0] if options else {}
+
+
+def _trigger_selection_options_for_condition(
+    condition_text: str,
+    questions_by_number: Dict[str, SurveyQuestion],
+) -> List[Dict[str, str]]:
+    return _trigger_selection_option_result_for_condition(condition_text, questions_by_number).options
+
+
+def _trigger_selection_option_result_for_condition(
+    condition_text: str,
+    questions_by_number: Dict[str, SurveyQuestion],
+) -> _SelectionOptionResult:
     parsed = parse_condition_expression(condition_text)
     if not parsed.is_parsed or parsed.node is None:
-        return {}
-    return _trigger_selections_for_node(parsed.node, questions_by_number)
+        return _SelectionOptionResult([], reason="unparsed_condition")
+    return _trigger_selection_option_result_for_node(parsed.node, questions_by_number)
 
 
 def _trigger_selections_for_node(
     node: ConditionNode,
     questions_by_number: Dict[str, SurveyQuestion],
 ) -> Dict[str, str]:
+    options = _trigger_selection_options_for_node(node, questions_by_number)
+    return options[0] if options else {}
+
+
+def _trigger_selection_options_for_node(
+    node: ConditionNode,
+    questions_by_number: Dict[str, SurveyQuestion],
+) -> List[Dict[str, str]]:
+    return _trigger_selection_option_result_for_node(node, questions_by_number).options
+
+
+def _trigger_selection_option_result_for_node(
+    node: ConditionNode,
+    questions_by_number: Dict[str, SurveyQuestion],
+) -> _SelectionOptionResult:
     if isinstance(node, ConditionClause):
-        code = _trigger_code_for_clause(node, questions_by_number)
-        return {node.question_number: code} if code else {}
+        codes, truncated = _trigger_codes_for_clause(node, questions_by_number)
+        options = [
+            {node.question_number: code}
+            for code in codes
+        ]
+        return _SelectionOptionResult(
+            options,
+            truncated=truncated,
+            unsatisfiable=not options,
+            reason="" if options else "no_satisfying_answer_code",
+        )
 
     if node.operator == "and":
-        selections: Dict[str, str] = {}
+        options: List[Dict[str, str]] = [{}]
+        truncated = False
         for child in node.children:
-            child_selections = _trigger_selections_for_node(child, questions_by_number)
-            for qn, code in child_selections.items():
-                existing = selections.get(qn)
-                if existing is not None and existing != code:
-                    return {}
-                selections[qn] = code
-        return selections
+            child_result = _trigger_selection_option_result_for_node(child, questions_by_number)
+            truncated = truncated or child_result.truncated
+            child_options = child_result.options
+            if not child_options:
+                return _SelectionOptionResult(
+                    [],
+                    truncated=truncated,
+                    unsatisfiable=True,
+                    reason=child_result.reason or "no_child_candidates",
+                )
+            merged_options: List[Dict[str, str]] = []
+            seen_merged = set()
+            cap_reached = False
+            for base in options:
+                if cap_reached:
+                    break
+                for child_selection in child_options:
+                    merged = dict(base)
+                    conflict = False
+                    for qn, code in child_selection.items():
+                        existing = merged.get(qn)
+                        if existing is not None and existing != code:
+                            conflict = True
+                            break
+                        merged[qn] = code
+                    if not conflict:
+                        key = tuple(sorted(merged.items()))
+                        if key in seen_merged:
+                            continue
+                        seen_merged.add(key)
+                        merged_options.append(merged)
+                        if len(merged_options) >= MAX_TRIGGER_SELECTION_OPTIONS:
+                            cap_reached = True
+                            break
+            if cap_reached:
+                truncated = True
+            options = merged_options
+            if not options:
+                return _SelectionOptionResult(
+                    [],
+                    truncated=truncated,
+                    unsatisfiable=True,
+                    reason="conflicting_and_conditions",
+                )
+        return _SelectionOptionResult(options, truncated=truncated)
 
-    for child in node.children:
-        selections = _trigger_selections_for_node(child, questions_by_number)
-        if selections:
-            return selections
-    return {}
+    options = []
+    seen_options = set()
+    truncated = False
+    for child_idx, child in enumerate(node.children):
+        child_result = _trigger_selection_option_result_for_node(child, questions_by_number)
+        truncated = truncated or child_result.truncated
+        for option_idx, option in enumerate(child_result.options):
+            key = tuple(sorted(option.items()))
+            if key in seen_options:
+                continue
+            seen_options.add(key)
+            options.append(option)
+            if len(options) >= MAX_TRIGGER_SELECTION_OPTIONS:
+                has_more_current = option_idx + 1 < len(child_result.options)
+                has_more_children = child_idx + 1 < len(node.children)
+                truncated = truncated or has_more_current or has_more_children
+                break
+        if len(options) >= MAX_TRIGGER_SELECTION_OPTIONS:
+            break
+    return _SelectionOptionResult(
+        options,
+        truncated=truncated,
+        unsatisfiable=not options,
+        reason="" if options else "no_or_candidates",
+    )
+
+
+def _dedupe_selection_options(options: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    deduped = []
+    seen = set()
+    for option in options:
+        key = tuple(sorted(option.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(option)
+    return deduped
 
 
 def _trigger_code_for_clause(
     clause: ConditionClause,
     questions_by_number: Dict[str, SurveyQuestion],
 ) -> Optional[str]:
+    codes, _ = _trigger_codes_for_clause(clause, questions_by_number)
+    return codes[0] if codes else None
+
+
+def _trigger_codes_for_clause(
+    clause: ConditionClause,
+    questions_by_number: Dict[str, SurveyQuestion],
+) -> Tuple[List[str], bool]:
     if clause.operator == "in":
-        return clause.values[0] if clause.values else None
+        values = list(clause.values)
+        return values[:MAX_TRIGGER_SELECTION_OPTIONS], len(values) > MAX_TRIGGER_SELECTION_OPTIONS
 
     excluded = set(clause.values)
     q = questions_by_number.get(clause.question_number)
     if q is None:
         q = questions_by_number.get(clause.question_number.upper())
     if q and q.answer_options:
+        codes = []
         for opt in q.answer_options:
             code = str(opt.code)
             if code not in excluded:
-                return code
-    return "1" if "1" not in excluded else None
+                codes.append(code)
+        return codes[:MAX_TRIGGER_SELECTION_OPTIONS], len(codes) > MAX_TRIGGER_SELECTION_OPTIONS
+    return (["1"], False) if "1" not in excluded else ([], False)
+
+
+def _covered_branch_indices_from_path(
+    path: SimulatedPath,
+    branches: List[Tuple[str, str, str]],
+) -> set:
+    """Return skip-rule indices that were actually triggered on a traced path."""
+    covered = set()
+    observed_answers: Dict[str, str] = {}
+
+    for step in path.steps:
+        if step.selected_answer is not None:
+            observed_answers[step.question_number] = step.selected_answer
+
+        if not step.skip_triggered:
+            continue
+
+        for idx, (source, target, condition_text) in enumerate(branches):
+            if source != step.question_number or target != step.skip_triggered:
+                continue
+            if _condition_matches(condition_text, observed_answers):
+                covered.add(idx)
+
+    return covered
+
+
+def _branch_display(branch: Tuple[str, str, str]) -> str:
+    source, target, condition_text = branch
+    if condition_text:
+        return f"{source}->{target} ({condition_text})"
+    return f"{source}->{target}"
+
+
+def _skip_branches_from_graph(graph: SkipLogicGraph) -> List[Tuple[str, str, str]]:
+    return [
+        (edge.source, edge.target, _edge_condition_text(edge))
+        for edge in graph.edges
+        if edge.edge_type == "skip"
+    ]
+
+
+def analyze_branch_diagnostics(
+    questions: List[SurveyQuestion],
+    graph: SkipLogicGraph,
+    scenarios: List[TestScenario],
+) -> List[BranchDiagnostic]:
+    """Diagnose why each skip branch is or is not covered by generated scenarios."""
+    qn_to_q: Dict[str, SurveyQuestion] = {q.question_number: q for q in questions}
+    for q in questions:
+        qn_to_q[q.question_number.upper()] = q
+
+    branches = _skip_branches_from_graph(graph)
+    covered_labels = {
+        branch
+        for scenario in scenarios
+        for branch in scenario.verified_branches
+    }
+    diagnostics: List[BranchDiagnostic] = []
+
+    for branch in branches:
+        source, target, condition_text = branch
+        branch_label = _branch_display(branch)
+        if branch_label in covered_labels:
+            diagnostics.append(BranchDiagnostic(
+                branch=branch_label,
+                source=source,
+                target=target,
+                condition=condition_text,
+                status="covered",
+                severity="info",
+                detail="생성된 테스트 시나리오에서 실제 경로가 이 분기를 트리거했습니다.",
+            ))
+            continue
+
+        parsed = parse_condition_expression(condition_text)
+        if not parsed.is_parsed:
+            diagnostics.append(BranchDiagnostic(
+                branch=branch_label,
+                source=source,
+                target=target,
+                condition=condition_text,
+                status="unparsed_condition",
+                severity="warning",
+                detail="조건식을 자동 파싱할 수 없어 분기 커버리지를 검증하지 못했습니다.",
+            ))
+            continue
+
+        option_result = _trigger_selection_option_result_for_condition(condition_text, qn_to_q)
+        if option_result.unsatisfiable or not option_result.options:
+            diagnostics.append(BranchDiagnostic(
+                branch=branch_label,
+                source=source,
+                target=target,
+                condition=condition_text,
+                status="unsatisfiable_condition",
+                severity="critical",
+                detail=(
+                    "조건을 만족하는 응답 조합을 만들 수 없습니다. "
+                    f"원인: {option_result.reason or 'unknown'}"
+                ),
+                truncated=option_result.truncated,
+            ))
+            continue
+
+        reached_source = False
+        source_path: Optional[SimulatedPath] = None
+        source_selections: Dict[str, str] = {}
+        for selections in option_result.options:
+            path = trace_path(questions, graph, selections)
+            if source in path.question_numbers:
+                reached_source = True
+                source_path = path
+                source_selections = selections
+                break
+            if source_path is None:
+                source_path = path
+                source_selections = selections
+
+        if option_result.truncated:
+            status = "candidate_truncated"
+            severity = "warning"
+            detail = (
+                f"후보 응답 조합이 {MAX_TRIGGER_SELECTION_OPTIONS}개로 제한되어 "
+                "일부 조합을 검증하지 못했습니다."
+            )
+        elif not reached_source:
+            status = "source_not_reached"
+            severity = "warning"
+            detail = (
+                "조건을 만족하는 후보 응답은 만들었지만, 앞선 스킵 로직 때문에 "
+                "분기 기준 문항에 도달하지 못했습니다."
+            )
+        else:
+            status = "not_triggered_on_trace"
+            severity = "warning"
+            detail = (
+                "분기 기준 문항에는 도달했지만 해당 target으로 이동하지 않았습니다. "
+                "동일 문항의 다른 스킵 규칙 우선순위나 조건 구현을 확인해야 합니다."
+            )
+
+        diagnostics.append(BranchDiagnostic(
+            branch=branch_label,
+            source=source,
+            target=target,
+            condition=condition_text,
+            status=status,
+            severity=severity,
+            detail=detail,
+            candidate_count=len(option_result.options),
+            truncated=option_result.truncated,
+            example_selections=source_selections,
+            example_path=source_path.question_numbers if source_path else [],
+        ))
+
+    return diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -553,11 +856,8 @@ def generate_test_scenarios(
     for q in questions:
         qn_to_q[q.question_number.upper()] = q
 
-    # 모든 스킵 분기 수집: (source, target, condition_label)
-    all_branches: List[Tuple[str, str, str]] = []
-    for edge in graph.edges:
-        if edge.edge_type == "skip":
-            all_branches.append((edge.source, edge.target, _edge_condition_text(edge)))
+    # 모든 스킵 분기 수집: (source, target, original_condition)
+    all_branches = _skip_branches_from_graph(graph)
 
     if not all_branches:
         # 스킵 없음 — 순차 경로 1개만
@@ -585,38 +885,40 @@ def generate_test_scenarios(
             source, target, cond_label = all_branches[idx]
 
             # 이 분기를 트리거하는 답변 선택
-            selections = _trigger_selections_for_condition(cond_label, qn_to_q)
-            if not selections:
+            candidate_selections = _trigger_selection_options_for_condition(cond_label, qn_to_q)
+            if not candidate_selections:
                 # 파싱 불가 — 강제로 source 문항에 코드 "1" 설정
-                selections[source] = "1"
+                candidate_selections = [{source: "1"}]
 
-            # 이 선택으로 커버되는 분기들 계산
-            covered_by_this: set = set()
-            for j in uncovered:
-                s2, t2, c2 = all_branches[j]
-                if _condition_matches(c2, selections):
-                    covered_by_this.add(j)
+            for selections in candidate_selections:
+                # 이 선택으로 실제 trace에서 발생하는 분기만 커버로 인정
+                candidate_path = trace_path(questions, graph, selections)
+                covered_by_this = (
+                    _covered_branch_indices_from_path(candidate_path, all_branches)
+                    & uncovered
+                )
 
-            if not covered_by_this:
-                covered_by_this.add(idx)
-
-            if len(covered_by_this) > len(best_covered):
-                best_covered = covered_by_this
-                best_selections = selections
+                if len(covered_by_this) > len(best_covered):
+                    best_covered = covered_by_this
+                    best_selections = selections
 
         if not best_covered:
-            # 안전장치 — 하나씩 제거
+            # 도달 불가/파싱 불가 분기는 시나리오를 만들되 커버로 과대계상하지 않는다.
             idx = next(iter(uncovered))
-            best_covered = {idx}
             source, target, cond_label = all_branches[idx]
-            best_selections = {source: "1"}
+            best_selections = _trigger_selections_for_condition(cond_label, qn_to_q)
+            if not best_selections:
+                best_selections = {source: "1"}
+            uncovered.remove(idx)
+        else:
+            uncovered -= best_covered
 
-        uncovered -= best_covered
         scenario_id += 1
 
         # 경로 추적
         path = trace_path(questions, graph, best_selections)
-        verified = [f"{all_branches[i][0]}->{all_branches[i][1]}" for i in best_covered]
+        verified_indices = _covered_branch_indices_from_path(path, all_branches) & best_covered
+        verified = [_branch_display(all_branches[i]) for i in sorted(verified_indices)]
 
         # 설명 생성
         selections_desc = ", ".join(f"{k}={v}" for k, v in best_selections.items())
@@ -652,12 +954,14 @@ def simulate_paths(questions: List[SurveyQuestion]) -> SimulationResult:
             total_questions=0,
             total_skip_rules=0,
             unparsed_conditions=[],
+            branch_diagnostics=[],
         )
 
     graph = build_skip_logic_graph(questions)
     analysis = analyze_graph(graph, questions)
     paths = enumerate_paths(questions, graph)
     scenarios = generate_test_scenarios(questions, graph)
+    branch_diagnostics = analyze_branch_diagnostics(questions, graph, scenarios)
 
     # 시나리오에 보기 라벨 매핑
     qn_map = {q.question_number: q for q in questions}
@@ -691,6 +995,7 @@ def simulate_paths(questions: List[SurveyQuestion]) -> SimulationResult:
         total_questions=len(questions),
         total_skip_rules=graph.total_skip_rules,
         unparsed_conditions=unparsed,
+        branch_diagnostics=branch_diagnostics,
     )
 
 
