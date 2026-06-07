@@ -44,6 +44,7 @@ class GraphEdge:
     edge_type: str        # "sequential" | "skip" | "filter"
     label: str            # 조건 텍스트 (sequential은 빈 문자열)
     original_target: str  # 파싱 전 원문
+    original_condition: str = ""  # 파싱/평가용 원본 조건 텍스트
 
 
 @dataclass
@@ -130,6 +131,7 @@ def build_skip_logic_graph(questions: List[SurveyQuestion]) -> SkipLogicGraph:
             edge_type="sequential",
             label="",
             original_target="",
+            original_condition="",
         ))
 
     # 스킵 엣지
@@ -152,6 +154,7 @@ def build_skip_logic_graph(questions: List[SurveyQuestion]) -> SkipLogicGraph:
                     edge_type="skip",
                     label=_truncate(sl.condition, 30),
                     original_target=sl.target,
+                    original_condition=sl.condition,
                 ))
             else:
                 # 정규화된 문항 번호로 매칭
@@ -163,6 +166,7 @@ def build_skip_logic_graph(questions: List[SurveyQuestion]) -> SkipLogicGraph:
                     edge_type="skip",
                     label=_truncate(sl.condition, 30),
                     original_target=sl.target,
+                    original_condition=sl.condition,
                 ))
 
     # 필터 엣지 (역참조 — 복합 조건의 모든 참조 문항 추출)
@@ -186,6 +190,7 @@ def build_skip_logic_graph(questions: List[SurveyQuestion]) -> SkipLogicGraph:
                 edge_type="filter",
                 label=_truncate(filt, 30),
                 original_target=filt,
+                original_condition=filt,
             ))
 
     # END 노드

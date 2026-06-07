@@ -5,32 +5,19 @@ SurveyDocument의 스킵 로직 그래프를 기반으로
 LLM 불필요 — 순수 알고리즘.
 """
 
-import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from models.survey import SurveyQuestion
+from services.condition_evaluator import (
+    ConditionClause,
+    ConditionNode,
+    parse_condition_expression,
+)
 from services.skip_logic_service import (
     build_skip_logic_graph,
-    parse_target,
     SkipLogicGraph,
-    GraphEdge,
 )
-
-# ---------------------------------------------------------------------------
-# 조건 파싱 패턴
-# ---------------------------------------------------------------------------
-
-# "Q1=1 또는 2 응답자", "Q3=3,4", "Q5 = 1~3" 등에서 Q#과 코드 추출
-_CONDITION_PATTERN = re.compile(
-    r'([A-Za-z]+\d+[a-z]?(?:[-_]\d+)*)'   # Q 번호
-    r'\s*[=≠]\s*'                           # = 또는 ≠
-    r'([\d,~\-\s또는or/and및]+)',            # 코드 목록
-    re.IGNORECASE,
-)
-
-_CODE_SPLIT = re.compile(r'[,\s또는or/and및~\-]+', re.IGNORECASE)
-
 
 # ---------------------------------------------------------------------------
 # 데이터 클래스
@@ -131,26 +118,119 @@ class SimulationResult:
 
 
 def parse_condition(condition_text: str) -> ConditionRef:
-    """스킵 로직 condition 텍스트에서 문항 번호와 응답 코드를 추출.
+    """스킵 로직 condition 텍스트에서 첫 조건 clause의 문항/코드를 추출.
 
     "Q1=1 또는 2 응답자" → ConditionRef("Q1", ["1","2"], ..., True)
     파싱 불가 시 is_parsed=False.
+
+    이 함수는 UI/기존 호출부 호환용 wrapper다. 실제 경로 추적은
+    ``condition_evaluator``의 full expression 평가 결과를 사용한다.
     """
     if not condition_text or not condition_text.strip():
         return ConditionRef("", [], condition_text or "", False)
 
-    m = _CONDITION_PATTERN.search(condition_text)
-    if not m:
+    parsed = parse_condition_expression(condition_text)
+    if not parsed.is_parsed or parsed.node is None:
         return ConditionRef("", [], condition_text, False)
 
-    qn = m.group(1).upper()
-    codes_raw = m.group(2).strip()
-    codes = [c.strip() for c in _CODE_SPLIT.split(codes_raw) if c.strip() and c.strip().isdigit()]
+    clause = _first_clause(parsed.node)
+    if clause is None:
+        return ConditionRef("", [], condition_text, False)
 
-    if not codes:
-        return ConditionRef(qn, [], condition_text, False)
+    return ConditionRef(
+        question_number=clause.question_number,
+        answer_codes=list(clause.values),
+        raw_text=condition_text,
+        is_parsed=True,
+    )
 
-    return ConditionRef(qn, codes, condition_text, True)
+
+def _first_clause(node: ConditionNode) -> Optional[ConditionClause]:
+    if isinstance(node, ConditionClause):
+        return node
+    for child in node.children:
+        clause = _first_clause(child)
+        if clause is not None:
+            return clause
+    return None
+
+
+def _edge_condition_text(edge) -> str:
+    return getattr(edge, "original_condition", "") or edge.label
+
+
+def _answers_for_evaluator(answer_selections: Dict[str, object]) -> Dict[str, object]:
+    answers: Dict[str, object] = {}
+    for qn, value in answer_selections.items():
+        answers[qn] = value
+        answers[str(qn).upper()] = value
+    return answers
+
+
+def _get_answer(answer_selections: Dict[str, str], question_number: str) -> Optional[str]:
+    return answer_selections.get(question_number) or answer_selections.get(question_number.upper())
+
+
+def _condition_matches(condition_text: str, answer_selections: Dict[str, object]) -> bool:
+    parsed = parse_condition_expression(condition_text)
+    if not parsed.is_parsed:
+        return False
+    return parsed.evaluate(_answers_for_evaluator(answer_selections))
+
+
+def _trigger_selections_for_condition(
+    condition_text: str,
+    questions_by_number: Dict[str, SurveyQuestion],
+) -> Dict[str, str]:
+    parsed = parse_condition_expression(condition_text)
+    if not parsed.is_parsed or parsed.node is None:
+        return {}
+    return _trigger_selections_for_node(parsed.node, questions_by_number)
+
+
+def _trigger_selections_for_node(
+    node: ConditionNode,
+    questions_by_number: Dict[str, SurveyQuestion],
+) -> Dict[str, str]:
+    if isinstance(node, ConditionClause):
+        code = _trigger_code_for_clause(node, questions_by_number)
+        return {node.question_number: code} if code else {}
+
+    if node.operator == "and":
+        selections: Dict[str, str] = {}
+        for child in node.children:
+            child_selections = _trigger_selections_for_node(child, questions_by_number)
+            for qn, code in child_selections.items():
+                existing = selections.get(qn)
+                if existing is not None and existing != code:
+                    return {}
+                selections[qn] = code
+        return selections
+
+    for child in node.children:
+        selections = _trigger_selections_for_node(child, questions_by_number)
+        if selections:
+            return selections
+    return {}
+
+
+def _trigger_code_for_clause(
+    clause: ConditionClause,
+    questions_by_number: Dict[str, SurveyQuestion],
+) -> Optional[str]:
+    if clause.operator == "in":
+        return clause.values[0] if clause.values else None
+
+    excluded = set(clause.values)
+    q = questions_by_number.get(clause.question_number)
+    if q is None:
+        q = questions_by_number.get(clause.question_number.upper())
+    if q and q.answer_options:
+        for opt in q.answer_options:
+            code = str(opt.code)
+            if code not in excluded:
+                return code
+    return "1" if "1" not in excluded else None
 
 
 # ---------------------------------------------------------------------------
@@ -392,15 +472,16 @@ def trace_path(
     qn_to_idx: Dict[str, int] = {qn: i for i, qn in enumerate(question_nodes)}
 
     # 스킵 엣지 맵
-    skip_edges: Dict[str, List[Tuple[str, str, str]]] = {}  # source → [(target, condition, label)]
+    skip_edges: Dict[str, List[Tuple[str, str]]] = {}  # source → [(target, original_condition)]
     for edge in graph.edges:
         if edge.edge_type == "skip":
             skip_edges.setdefault(edge.source, []).append(
-                (edge.target, edge.label, edge.original_target)
+                (edge.target, _edge_condition_text(edge))
             )
 
     steps: List[PathStep] = []
     visited = set()
+    observed_answers: Dict[str, str] = {}
     current_qn = question_nodes[0]
 
     while current_qn and current_qn in node_set and current_qn not in visited:
@@ -409,18 +490,15 @@ def trace_path(
         text = q.question_text[:100] if q else ""
         qtype = q.question_type or "Unknown" if q else "Unknown"
 
-        selected = answer_selections.get(current_qn)
+        selected = _get_answer(answer_selections, current_qn)
+        if selected is not None:
+            observed_answers[current_qn] = selected
         skip_to = None
 
         # 스킵 조건 매칭
-        if selected and current_qn in skip_edges:
-            for target, cond_label, orig in skip_edges[current_qn]:
-                cond_ref = parse_condition(cond_label)
-                if not cond_ref.is_parsed:
-                    # 조건 파싱 불가 시 원본 텍스트에서 재시도
-                    cond_ref = parse_condition(orig)
-                # 파싱된 조건의 Q#이 현재 문항이고 선택한 코드가 포함되면 스킵
-                if cond_ref.is_parsed and selected in cond_ref.answer_codes:
+        if current_qn in skip_edges:
+            for target, condition_text in skip_edges[current_qn]:
+                if _condition_matches(condition_text, observed_answers):
                     skip_to = target
                     break
 
@@ -472,13 +550,14 @@ def generate_test_scenarios(
 
     question_nodes = [q.question_number for q in questions]
     qn_to_q: Dict[str, SurveyQuestion] = {q.question_number: q for q in questions}
+    for q in questions:
+        qn_to_q[q.question_number.upper()] = q
 
     # 모든 스킵 분기 수집: (source, target, condition_label)
     all_branches: List[Tuple[str, str, str]] = []
     for edge in graph.edges:
         if edge.edge_type == "skip":
-            branch_id = f"{edge.source}->{edge.target}"
-            all_branches.append((edge.source, edge.target, edge.label))
+            all_branches.append((edge.source, edge.target, _edge_condition_text(edge)))
 
     if not all_branches:
         # 스킵 없음 — 순차 경로 1개만
@@ -504,13 +583,10 @@ def generate_test_scenarios(
 
         for idx in list(uncovered):
             source, target, cond_label = all_branches[idx]
-            cond_ref = parse_condition(cond_label)
 
             # 이 분기를 트리거하는 답변 선택
-            selections: Dict[str, str] = {}
-            if cond_ref.is_parsed and cond_ref.answer_codes:
-                selections[cond_ref.question_number] = cond_ref.answer_codes[0]
-            else:
+            selections = _trigger_selections_for_condition(cond_label, qn_to_q)
+            if not selections:
                 # 파싱 불가 — 강제로 source 문항에 코드 "1" 설정
                 selections[source] = "1"
 
@@ -518,11 +594,7 @@ def generate_test_scenarios(
             covered_by_this: set = set()
             for j in uncovered:
                 s2, t2, c2 = all_branches[j]
-                c2_ref = parse_condition(c2)
-                if c2_ref.is_parsed and c2_ref.question_number in selections:
-                    if selections[c2_ref.question_number] in c2_ref.answer_codes:
-                        covered_by_this.add(j)
-                elif s2 == source:
+                if _condition_matches(c2, selections):
                     covered_by_this.add(j)
 
             if not covered_by_this:
@@ -608,8 +680,8 @@ def simulate_paths(questions: List[SurveyQuestion]) -> SimulationResult:
     unparsed: List[Tuple[str, str]] = []
     for q in questions:
         for sl in q.skip_logic:
-            cond_ref = parse_condition(sl.condition)
-            if not cond_ref.is_parsed:
+            parsed = parse_condition_expression(sl.condition)
+            if not parsed.is_parsed:
                 unparsed.append((q.question_number, sl.condition))
 
     return SimulationResult(
