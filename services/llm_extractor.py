@@ -392,6 +392,10 @@ Extract routing/branching instructions as {condition, target} pairs.
   - Use "QN=code1,code2" for multiple codes (OR): "Q1=1,2"
   - Use "QN!=code" for exclusion: "Q3!=99"
   - Use "&" for AND conditions: "Q1=1&Q3!=99"
+  - Use "~" for numeric code ranges when explicitly shown: "Q2=1~3"
+  - Regardless of the source language, output canonical DSL only.
+    Examples: "Q1에서 1 또는 2 응답자" → "Q1=1,2";
+    "ask if Q2 is not 99" → "Q2!=99".
   - Preserve the original question number format (e.g., "SQ1a", "SC2", "BVT11")
 
 FILTER CONDITION — EXTRACTION RULES:
@@ -423,6 +427,8 @@ Extract WHO should answer each question. Filter appears BEFORE or AT the questio
   Filter format rules:
   - Use same condition format as skip_logic: "QN=code", "QN=code1,code2", "&" for AND
   - "ASK ALL" / "모두에게" → "All respondents"
+  - Regardless of source language, normalize conditional filters into canonical DSL
+    such as "Q1=1,2", "Q2!=99", or "Q1=1&Q3=2".
   - Preserve the exact question numbers referenced in the filter text
   - If no explicit filter text is found, set filter to null (do NOT guess)
 

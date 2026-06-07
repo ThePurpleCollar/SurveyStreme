@@ -10,6 +10,7 @@ from services.condition_evaluator import (
     evaluate_condition,
     parse_condition_expression,
 )
+from services.llm_extractor import SYSTEM_PROMPT
 from services.path_simulator import simulate_paths
 
 
@@ -51,6 +52,28 @@ assert result.node.operator == "or"
 assert result.evaluate({"Q1": "2"}) is True
 assert result.evaluate({"Q1": "3"}) is False
 
+result = _assert_parsed("Q1=1 OR 2")
+assert isinstance(result.node, ConditionClause)
+assert result.node.values == ("1", "2")
+assert result.evaluate({"Q1": "2"}) is True
+
+result = _assert_parsed("Q1=1 또는 2 응답자")
+assert isinstance(result.node, ConditionClause)
+assert result.node.values == ("1", "2")
+assert result.evaluate({"Q1": "2"}) is True
+
+result = _assert_parsed("Q1!=1 OR 2")
+assert isinstance(result.node, ConditionClause)
+assert result.node.operator == "not_in"
+assert result.node.values == ("1", "2")
+assert result.evaluate({"Q1": "3"}) is True
+assert result.evaluate({"Q1": "2"}) is False
+
+result = _assert_parsed("Q1=1 OR Q2=2")
+assert isinstance(result.node, ConditionGroup)
+assert result.references == {"Q1", "Q2"}
+assert result.evaluate({"Q1": "3", "Q2": "2"}) is True
+
 result = _assert_parsed("Q2=1~3")
 assert result.node.values == ("1", "2", "3")
 assert result.evaluate({"Q2": "2"}) is True
@@ -72,6 +95,9 @@ assert unparsed.is_parsed is False
 assert unparsed.evaluate({"Q1": "1"}) is False
 
 unparsed = parse_condition_expression("Q1=1 AND")
+assert unparsed.is_parsed is False
+
+unparsed = parse_condition_expression("Q1=1 AND Q2=2 OR 3")
 assert unparsed.is_parsed is False
 
 # Additive PR guard: existing path simulator behavior remains available.
@@ -96,5 +122,9 @@ assert simulation.total_skip_rules == 1
 assert simulation.branch_coverage_percent == 100.0
 assert len(simulation.test_scenarios) == 1
 assert simulation.test_scenarios[0].answer_selections == {"S1": "1"}
+
+assert "Regardless of the source language, output canonical DSL only" in SYSTEM_PROMPT
+assert '"Q2=1~3"' in SYSTEM_PROMPT
+assert '"Q1=1,2"' in SYSTEM_PROMPT
 
 print("ALL CONDITION EVALUATOR TESTS PASSED")

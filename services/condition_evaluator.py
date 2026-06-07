@@ -79,7 +79,7 @@ class ConditionParseResult:
 _CLAUSE_RE = re.compile(
     r"(?P<question>[A-Za-z]+\d+[A-Za-z]?(?:[-_]\d+)*)"
     r"\s*(?P<operator>!=|<>|≠|=)\s*"
-    r"(?P<values>[^&|()]+)",
+    r"(?P<values>[^=&|()]+)",
     re.IGNORECASE,
 )
 
@@ -120,10 +120,10 @@ def evaluate_condition(condition_text: str | None, answers: dict[str, object]) -
 
 
 def _parse_or_expression(text: str) -> ConditionNode:
-    parts = _split_top_level(text, " OR ")
+    parts = _fold_bare_or_values(_split_top_level(text, " OR "))
     if len(parts) > 1:
         return ConditionGroup("or", tuple(_parse_and_expression(part) for part in parts))
-    return _parse_and_expression(text)
+    return _parse_and_expression(parts[0])
 
 
 def _parse_and_expression(text: str) -> ConditionNode:
@@ -157,6 +157,54 @@ def _parse_factor(text: str) -> ConditionNode:
         values=tuple(values),
         raw_text=value,
     )
+
+
+def _fold_bare_or_values(parts: list[str]) -> list[str]:
+    """Fold ``Q1=1 OR 2`` shorthand into ``Q1=1,2``.
+
+    The fold is intentionally conservative. Bare values are attached only when
+    the immediately preceding part is a single clause, not a compound group.
+    """
+    folded: list[str] = []
+    for part in parts:
+        value = part.strip()
+        if not value:
+            folded.append(value)
+            continue
+
+        if folded and _is_bare_value_expression(value):
+            previous = folded[-1]
+            try:
+                previous_clause = _parse_factor(previous)
+            except ValueError:
+                folded.append(value)
+                continue
+            if isinstance(previous_clause, ConditionClause):
+                folded[-1] = _append_clause_values(previous, value)
+                continue
+
+        folded.append(value)
+    return folded
+
+
+def _append_clause_values(clause_text: str, extra_values: str) -> str:
+    match = _CLAUSE_RE.fullmatch(clause_text.strip())
+    if not match:
+        return clause_text
+    prefix = clause_text[:match.start("values")]
+    values = f"{match.group('values').strip()},{extra_values.strip()}"
+    return f"{prefix}{values}"
+
+
+def _is_bare_value_expression(text: str) -> bool:
+    cleaned = _strip_respondent_suffix(text)
+    if not cleaned:
+        return False
+    if re.search(r"[=<>≠]|(?:^|\s)(?:AND|OR)(?:\s|$)|&|\|", cleaned, flags=re.IGNORECASE):
+        return False
+    if re.search(r"[A-Za-z]+\d+[A-Za-z]?(?:[-_]\d+)*\s*(?:=|!=|<>|≠)", cleaned, flags=re.IGNORECASE):
+        return False
+    return bool(re.fullmatch(r"[-A-Za-z0-9_'\",./~\s]+", cleaned))
 
 
 def _normalize_condition_text(text: str) -> str:
@@ -208,7 +256,7 @@ def _balanced_parentheses(text: str) -> bool:
 
 
 def _parse_values(raw_values: str) -> list[str]:
-    cleaned = re.sub(r"\brespondents?\b|응답자(?:만|에게)?", "", raw_values, flags=re.IGNORECASE)
+    cleaned = _strip_respondent_suffix(raw_values)
     cleaned = re.sub(r"\s+", "", cleaned)
     if not cleaned:
         return []
@@ -223,6 +271,10 @@ def _parse_values(raw_values: str) -> list[str]:
             values.append(part.strip("'\""))
 
     return _dedupe(values)
+
+
+def _strip_respondent_suffix(text: str) -> str:
+    return re.sub(r"\brespondents?\b|응답자(?:만|에게)?", "", str(text), flags=re.IGNORECASE).strip()
 
 
 def _expand_range(value: str, separator: str) -> list[str]:
