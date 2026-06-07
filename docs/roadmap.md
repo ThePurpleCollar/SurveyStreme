@@ -60,3 +60,13 @@
 - [ ] 추출 정확도 Ground Truth 비교 평가
 - [ ] DP 사양서 자동 생성
 - [ ] 페르소나 기반 시나리오 고도화 (filter 반영 + behavioral 포함)
+
+## Phase A — Agentic Link Test Handoff
+
+- [x] **TASK-A1**: 실행 가능한 스킵 조건 평가 기반 시나리오 생성 → full condition parser 사용
+- [x] **TASK-A2**: 실제 trace 기준 분기 커버리지 검증 → source 미도달 false positive 제거
+- [x] **TASK-A3**: 미커버 분기 원인 진단 → `Branch Diagnostics` UI/Excel 추가
+- [ ] **TASK-A4**: SurveyStreme → survey-link-tester A2A handoff schema 설계 → @docs/tasks/task-a4-link-test-handoff-schema.md
+- [ ] **TASK-A5**: 링크 테스트 시나리오 export payload 생성 → SurveyStreme에서 agent 입력 JSON 출력
+- [ ] **TASK-A6**: survey-link-tester가 payload를 받아 브라우저 테스트 실행 → 화면 확인/녹화/reasoning 로그 연결
+- [ ] **TASK-A7**: 테스트 결과를 SurveyStreme QA 리포트로 회수 → 오류, 재현 경로, 스크린샷/녹화 링크 정리
